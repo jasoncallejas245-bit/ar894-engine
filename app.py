@@ -3,10 +3,12 @@ import requests
 import json
 import os
 import random
+import asyncio
+import aiohttp
 from datetime import datetime, timedelta
 
-ENGINE_VERSION = "v3.11"
-LAST_UPDATE_LOG = "Added expected profit calculations and verified optimal mathematical edge models for Kalshi BTC and PrizePicks."
+ENGINE_VERSION = "v3.12"
+LAST_UPDATE_LOG = "Optimized for sub-second execution speed using asynchronous aiohttp webhook dispatch and strict 60%+ BTC filters."
 
 st.set_page_config(page_title=f"AR894 [{ENGINE_VERSION}] // Terminal", page_icon="⚡", layout="centered")
 
@@ -92,7 +94,7 @@ def save_history(data):
     with open(HISTORY_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-def send_discord(channel_type, message):
+async def async_send_discord(channel_type, message):
     webhook_map = {
         "bets": DISCORD_WEBHOOK_BETS,
         "kalshi": DISCORD_WEBHOOK_KALSHI,
@@ -100,15 +102,26 @@ def send_discord(channel_type, message):
     }
     target_url = webhook_map.get(channel_type, DISCORD_WEBHOOK_BETS)
     try:
-        requests.post(target_url, json={"content": message})
+        async with aiohttp.ClientSession() as session:
+            async with session.post(target_url, json={"content": message}, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                pass
     except Exception as e:
-        print(f"Webhook error ({channel_type}): {e}")
+        print(f"Async webhook error ({channel_type}): {e}")
+
+def send_discord(channel_type, message):
+    try:
+        asyncio.run(async_send_discord(channel_type, message))
+    except RuntimeError:
+        # Fallback if event loop is already running in streamlit thread context
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(async_send_discord(channel_type, message))
 
 history = load_history()
-if history.get("last_boot_version"] != ENGINE_VERSION:
+if history.get("last_boot_version") != ENGINE_VERSION:
     history["last_boot_version"] = ENGINE_VERSION
     save_history(history)
-    send_discord("updates", f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. Expected profit tracking & optimal math models verified.")
+    send_discord("updates", f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. High-speed asynchronous webhooks activated.")
 
 st.markdown(f"""
     <div class="ar-logo-container">
@@ -117,10 +130,10 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Fetch live Bitcoin price
+# Fetch live Bitcoin price instantly with a tight timeout
 btc_price = 79650.0
 try:
-    res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=3)
+    res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=1.5)
     if res.status_code == 200:
         btc_price = float(res.json()["data"]["amount"])
 except:
@@ -146,9 +159,7 @@ if seconds_remaining < 0:
 mins_left = seconds_remaining // 60
 secs_left = seconds_remaining % 60
 
-# Expected profit calculation for Kalshi binary contract (approx 0.95 payout ratio on win)
 expected_profit = BANKROLL_UNIT * 0.95 * btc_prob - BANKROLL_UNIT * (1 - btc_prob)
-
 btc_target = f"Bitcoin (BTC) 15m Contract — {btc_direction}"
 
 if btc_prob >= BTC_MIN_EDGE:
@@ -198,7 +209,7 @@ prop_pool = [
 
 selected_prop = random.choice(prop_pool)
 prop_target = f"{selected_prop['player']} — {selected_prop['prop']}"
-prop_profit = BANKROLL_UNIT * 2.0 * selected_prop['prob'] - BANKROLL_UNIT  # Standard 2-leg flex/power payout model
+prop_profit = BANKROLL_UNIT * 2.0 * selected_prop['prob'] - BANKROLL_UNIT
 prop_directive = f"EXECUTE: {prop_target} — Allocate ${BANKROLL_UNIT:.2f} on PrizePicks"
 
 st.markdown(f"""
