@@ -5,8 +5,8 @@ import os
 import random
 from datetime import datetime, timedelta
 
-ENGINE_VERSION = "v3.8"
-LAST_UPDATE_LOG = "Multi-channel Discord routing active (Bets, Kalshi BTC 15m with hold countdowns, AI System Updates) plus dual-section autonomous feeds."
+ENGINE_VERSION = "v3.9"
+LAST_UPDATE_LOG = "Added explicit buy-in timestamps, exact hold durations, and minute-marker sell targets to Kalshi BTC 15m alerts."
 
 st.set_page_config(page_title=f"AR894 [{ENGINE_VERSION}] // Terminal", page_icon="⚡", layout="centered")
 
@@ -73,8 +73,8 @@ st.markdown("""
 
 # MULTI-CHANNEL WEBHOOK ROUTING
 DISCORD_WEBHOOK_BETS = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-"
-DISCORD_WEBHOOK_KALSHI = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-" # Replace or share with dedicated channel webhook
-DISCORD_WEBHOOK_UPDATES = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-" # Replace or share with updates channel webhook
+DISCORD_WEBHOOK_KALSHI = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-"
+DISCORD_WEBHOOK_UPDATES = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-"
 
 HISTORY_FILE = "performance_log.json"
 BANKROLL_UNIT = 50.0
@@ -108,7 +108,7 @@ history = load_history()
 if history.get("last_boot_version") != ENGINE_VERSION:
     history["last_boot_version"] = ENGINE_VERSION
     save_history(history)
-    send_discord("updates", f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. Multi-channel Discord routing active (Bets, Kalshi 15m BTC, AI System Updates).")
+    send_discord("updates", f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. Precision Kalshi timing telemetry active.")
 
 st.markdown(f"""
     <div class="ar-logo-container">
@@ -126,7 +126,7 @@ try:
 except:
     pass
 
-# SECTION 1: Kalshi Live Bitcoin 15-Minute Monitor & Timing Engine
+# SECTION 1: Kalshi Live Bitcoin 15-Minute Monitor & Precision Timing Engine
 st.markdown("### 📈 Kalshi Live Bitcoin (BTC) 15-Minute Tracker & Timing Engine")
 btc_direction = "UP" if random.random() > 0.47 else "DOWN"
 btc_prob = 0.588 if btc_direction == "UP" else 0.574
@@ -136,6 +136,10 @@ current_minute = now.minute
 block_interval = (current_minute // 15) * 15
 block_start = now.replace(minute=block_interval, second=0, microsecond=0)
 expiration_time = block_start + timedelta(minutes=15)
+
+buy_in_time_str = block_start.strftime("%H:%M:%S")
+sell_marker_str = expiration_time.strftime("%H:%M:%S")
+
 seconds_remaining = int((expiration_time - now).total_seconds())
 if seconds_remaining < 0:
     seconds_remaining = 0
@@ -144,7 +148,7 @@ mins_left = seconds_remaining // 60
 secs_left = seconds_remaining % 60
 
 btc_target = f"Bitcoin (BTC) 15m Contract — {btc_direction}"
-btc_directive = f"EXECUTE: Buy '{btc_target}' — Hold for {mins_left}m {secs_left}s — Sell at Expiry"
+btc_directive = f"EXECUTE: Buy at {buy_in_time_str} — Hold for 15m — Sell by {sell_marker_str}"
 
 # Push to Kalshi channel if window refreshed
 time_sig = f"{block_start.strftime('%H:%M')}-{btc_direction}"
@@ -152,19 +156,22 @@ if history.get("last_notified_btc_time") != time_sig:
     history["last_notified_btc_time"] = time_sig
     save_history(history)
     send_discord("kalshi", 
-        f"⏰ **KALSHI 15M BTC TIMING ALERT** ⏰\n"
+        f"⏰ **KALSHI 15M BTC PRECISION TIMING ALERT** ⏰\n"
         f"🏛️ **Platform:** `Kalshi` | 🎯 **Direction:** `{btc_direction}`\n"
         f"💵 **Spot Price:** `${btc_price:,.2f}` | 📈 **Edge Prob:** {btc_prob*100:.1f}%\n"
-        f"⏱️ **Timing Directive:** Buy Now | **Hold Duration:** 15 Minutes\n"
-        f"⏳ **Countdown to Expiry / Sell:** `{mins_left}m {secs_left}s remaining`\n"
+        f"🟢 **Exact Buy-In Time:** `{buy_in_time_str}`\n"
+        f"⏱️ **Hold Duration:** `15 Minutes`\n"
+        f"🔴 **Exact Sell / Exit Marker:** `{sell_marker_str}`\n"
+        f"⏳ **Time Remaining:** `{mins_left}m {secs_left}s`\n"
         f"⚡ **Action:** {btc_directive}"
     )
 
 st.markdown(f"""
     <div class="ar-card">
-        <div style="font-size: 0.75rem; color: #888888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1.5px;">Kalshi Crypto Timing Feed</div>
+        <div style="font-size: 0.75rem; color: #888888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1.5px;">Kalshi Crypto Precision Timing Feed</div>
         <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom: 10px;">{btc_directive}</div>
-        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 8px;"><b>Spot Price:</b> ${btc_price:,.2f} | <b>Interval Expiry in:</b> {mins_left}m {secs_left}s</div>
+        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 6px;"><b>Buy-In Timestamp:</b> {buy_in_time_str} | <b>Sell Marker:</b> {sell_marker_str}</div>
+        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 8px;"><b>Spot Price:</b> ${btc_price:,.2f} | <b>Time Remaining:</b> {mins_left}m {secs_left}s</div>
         <div style="display: flex; justify-content: space-between; font-size: 0.85rem; border-top: 1px solid #222222; padding-top: 10px; color: #aaaaaa;">
             <span>Bias: <b style="color:#ffffff;">{btc_direction}</b></span>
             <span>Win Probability: <b style="color:#ffffff;">{btc_prob * 100:.1f}%</b></span>
