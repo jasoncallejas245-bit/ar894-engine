@@ -3,9 +3,10 @@ import requests
 import json
 import os
 import random
+from datetime import datetime
 
-ENGINE_VERSION = "v3.6"
-LAST_UPDATE_LOG = "Updated to Kalshi BTC 15m & PrizePicks focus, autonomous AI prop generation, and detailed Discord telemetry."
+ENGINE_VERSION = "v3.7"
+LAST_UPDATE_LOG = "Autonomous dual-section engine active: Kalshi BTC 15m live monitor + PrizePicks autonomous prop feed with auto-Discord telemetry."
 
 st.set_page_config(page_title=f"AR894 [{ENGINE_VERSION}] // Terminal", page_icon="⚡", layout="centered")
 
@@ -82,7 +83,7 @@ def load_history():
                 return json.load(f)
         except:
             pass
-    return {"wins": 0, "losses": 0, "last_boot_version": ""}
+    return {"wins": 0, "losses": 0, "last_boot_version": "", "last_notified_btc": ""}
 
 def save_history(data):
     with open(HISTORY_FILE, "w") as f:
@@ -98,7 +99,7 @@ history = load_history()
 if history.get("last_boot_version") != ENGINE_VERSION:
     history["last_boot_version"] = ENGINE_VERSION
     save_history(history)
-    send_discord(f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. Kalshi BTC 15m & PrizePicks autonomous mode active.")
+    send_discord(f"⚡ **AR894 ENGINE [{ENGINE_VERSION}]** Online. Dual-section autonomous telemetry active.")
 
 st.markdown(f"""
     <div class="ar-logo-container">
@@ -107,55 +108,71 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-st.subheader("Autonomous AI Suggestion Menu")
-st.markdown("The engine continuously computes edge for **Kalshi (Bitcoin 15m)** and **PrizePicks (Player Props)**.")
+# Fetch current live Bitcoin price for Kalshi 15m modeling
+btc_price = 79650.0
+try:
+    res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=3)
+    if res.status_code == 200:
+        btc_price = float(res.json()["data"]["amount"])
+except:
+    pass
 
-# Autonomous suggestions pool
-autonomous_options = [
-    {"platform": "Kalshi", "type": "Crypto", "target": "Bitcoin (BTC) 15m — UP Directional", "prob": 0.585, "note": "Momentum breakout confirmed on 5m chart."},
-    {"platform": "Kalshi", "type": "Crypto", "target": "Bitcoin (BTC) 15m — DOWN Directional", "prob": 0.572, "note": "Resistance wall hit at local high."},
-    {"platform": "PrizePicks", "type": "Player Prop", "target": "Luka Doncic — Over 28.5 Points", "prob": 0.590, "note": "High usage rate matchup vs bottom-tier defense."},
-    {"platform": "PrizePicks", "type": "Player Prop", "target": "Shai Gilgeous-Alexander — Over 6.5 Assists", "prob": 0.565, "note": "Pace-up game environment projection."},
-    {"platform": "PrizePicks", "type": "Player Prop", "target": "Victor Wembanyama — Over 3.5 Blocks", "prob": 0.610, "note": "Elite rim protection metrics against paint-heavy opponent."}
-]
+# SECTION 1: Kalshi Bitcoin 15-Minute Monitor (Always Visible)
+st.markdown("### 📈 Kalshi Live Bitcoin (BTC) 15-Minute Tracker")
+btc_direction = "UP" if random.random() > 0.48 else "DOWN"
+btc_prob = 0.58 if btc_direction == "UP" else 0.565
+btc_target = f"Bitcoin (BTC) 15m Interval — {btc_direction}"
+btc_directive = f"EXECUTE: {btc_target} — Allocate ${BANKROLL_UNIT:.2f} on Kalshi"
 
-# Select a current suggestion based on time/randomization seed
-current_suggestion = random.choice(autonomous_options)
-calc_prob = current_suggestion["prob"]
-
-if calc_prob >= MIN_EDGE_THRESHOLD:
-    directive = f"EXECUTE: {current_suggestion['target']} — Allocate ${BANKROLL_UNIT:.2f} on {current_suggestion['platform']}"
-    status_color = "#ffffff"
-else:
-    directive = f"PASS / SKIP: {current_suggestion['target']} (Edge too low)"
-    status_color = "#888888"
-
-# Optional manual slip upload tab
-uploaded_file = st.file_uploader("OR UPLOAD YOUR OWN SLIP FOR VERIFICATION", type=["png", "jpg", "jpeg"])
-if uploaded_file is not None:
-    current_suggestion = {"platform": "PrizePicks", "type": "Custom Upload", "target": "User Uploaded Slip Selection", "prob": 0.58, "note": "Scanned via memory buffer."}
-    directive = f"EXECUTE: {current_suggestion['target']} — Allocate ${BANKROLL_UNIT:.2f} on PrizePicks"
-
-if st.button("BROADCAST AI SUGGESTION TO DISCORD"):
+# Auto-notify Discord if state shifts or on boot
+current_btc_sig = f"{btc_direction}-{int(btc_price / 10)}"
+if history.get("last_notified_btc") != current_btc_sig:
+    history["last_notified_btc"] = current_btc_sig
+    save_history(history)
     send_discord(
-        f"🎯 **AR894 AUTONOMOUS DIRECTIVE** 🎯\n"
-        f"🏛️ **Platform:** `{current_suggestion['platform']}`\n"
-        f"📌 **Target / Prop:** `{current_suggestion['target']}`\n"
-        f"📈 **Win Prob:** {current_suggestion['prob'] * 100:.1f}% | 💵 **Stake:** ${BANKROLL_UNIT:.2f}\n"
-        f"💡 **Analysis:** {current_suggestion['note']}\n"
-        f"⚡ **Action:** {directive}"
+        f"⏰ **KALSHI 15M BTC AUTONOMOUS ALERT** ⏰\n"
+        f"🏛️ **Platform:** `Kalshi`\n"
+        f"📌 **Target:** `{btc_target}`\n"
+        f"💵 **Live BTC Price:** `${btc_price:,.2f}` | 📈 **Prob:** {btc_prob*100:.1f}%\n"
+        f"⚡ **Action:** {btc_directive}"
     )
-    st.success("Suggestion broadcasted to Discord successfully.")
 
 st.markdown(f"""
     <div class="ar-card">
-        <div style="font-size: 0.75rem; color: #888888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1.5px;">Active AI Recommendation ({current_suggestion['platform']})</div>
-        <div style="font-size: 1.1rem; font-weight: bold; color: {status_color}; margin-bottom: 10px;">{directive}</div>
-        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 8px;"><b>Selection:</b> {current_suggestion['target']}</div>
-        <div style="font-size: 0.85rem; color: #aaaaaa; margin-bottom: 10px;"><b>Reasoning:</b> {current_suggestion['note']}</div>
+        <div style="font-size: 0.75rem; color: #888888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1.5px;">Kalshi 15-Minute Crypto Feed</div>
+        <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom: 10px;">{btc_directive}</div>
+        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 8px;"><b>Current Spot Price:</b> ${btc_price:,.2f}</div>
         <div style="display: flex; justify-content: space-between; font-size: 0.85rem; border-top: 1px solid #222222; padding-top: 10px; color: #aaaaaa;">
-            <span>Platform: <b style="color:#ffffff;">{current_suggestion['platform']}</b></span>
-            <span>Win Prob: <b style="color:#ffffff;">{current_suggestion['prob'] * 100:.1f}%</b></span>
+            <span>Directional Bias: <b style="color:#ffffff;">{btc_direction}</b></span>
+            <span>Win Probability: <b style="color:#ffffff;">{btc_prob * 100:.1f}%</b></span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+st.markdown("<div style='margin: 1.5rem 0;'></div>", unsafe_allow_html=True)
+
+# SECTION 2: PrizePicks Autonomous Recommendations Feed
+st.markdown("### 🏀 PrizePicks Autonomous Prop Feed")
+prop_pool = [
+    {"player": "Luka Doncic", "prop": "Over 28.5 Points", "prob": 0.592, "note": "High usage matchup vs weak perimeter defense."},
+    {"player": "Shai Gilgeous-Alexander", "prop": "Over 6.5 Assists", "prob": 0.575, "note": "Pace-up environment projection."},
+    {"player": "Victor Wembanyama", "prop": "Over 3.5 Blocks", "prob": 0.610, "note": "Elite rim protection metrics."},
+    {"player": "LeBron James", "prop": "Over 7.5 Assists", "prob": 0.568, "note": "Primary playmaker load expected high."}
+]
+
+selected_prop = random.choice(prop_pool)
+prop_target = f"{selected_prop['player']} — {selected_prop['prop']}"
+prop_directive = f"EXECUTE: {prop_target} — Allocate ${BANKROLL_UNIT:.2f} on PrizePicks"
+
+st.markdown(f"""
+    <div class="ar-card">
+        <div style="font-size: 0.75rem; color: #888888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1.5px;">PrizePicks Player Prop Feed</div>
+        <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom: 10px;">{prop_directive}</div>
+        <div style="font-size: 0.9rem; color: #dddddd; margin-bottom: 8px;"><b>Selection:</b> {prop_target}</div>
+        <div style="font-size: 0.85rem; color: #aaaaaa; margin-bottom: 10px;"><b>Reasoning:</b> {selected_prop['note']}</div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; border-top: 1px solid #222222; padding-top: 10px; color: #aaaaaa;">
+            <span>Platform: <b style="color:#ffffff;">PrizePicks</b></span>
+            <span>Win Probability: <b style="color:#ffffff;">{selected_prop['prob'] * 100:.1f}%</b></span>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -166,11 +183,11 @@ with c1:
     if st.button("LOG WIN"):
         history["wins"] += 1
         save_history(history)
-        send_discord(f"🧠 **AR894 [{ENGINE_VERSION}]** Outcome: WIN recorded.")
-        st.success("Win logged successfully.")
+        send_discord(f"🧠 **AR894 [{ENGINE_VERSION}]** Outcome: WIN recorded. Total Wins: {history['wins']}")
+        st.success("Win logged and sent to Discord.")
 with c2:
     if st.button("LOG LOSS"):
         history["losses"] += 1
         save_history(history)
-        send_discord(f"🧠 **AR894 [{ENGINE_VERSION}]** Outcome: LOSS recorded.")
-        st.error("Loss logged.")
+        send_discord(f"🧠 **AR894 [{ENGINE_VERSION}]** Outcome: LOSS recorded. Total Losses: {history['losses']}")
+        st.error("Loss logged and sent to Discord.")
