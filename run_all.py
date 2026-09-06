@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 from pykalshi import KalshiClient
 
-DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-'
+DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_BETS"]
 KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID", "YOUR_ACTUAL_KALSHI_KEY_ID")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "/path/to/your/kalshi_private_key.pem")
 

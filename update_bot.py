@@ -4,7 +4,7 @@ import requests
 
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", 
-    "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-"
+    os.environ["DISCORD_WEBHOOK_BETS"]
 )
 
 def git_commit_and_push(commit_message):
