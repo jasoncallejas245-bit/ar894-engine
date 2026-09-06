@@ -23,7 +23,7 @@ DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 
 MAX_STAKE_PER_TRADE = float(os.getenv("MAX_STAKE_PER_TRADE", "5.00"))
 DAILY_LOSS_CAP = float(os.getenv("DAILY_LOSS_CAP", "5.00"))
-PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))  # sell once up this %
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 
@@ -31,6 +31,12 @@ SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
 DAILY_STATE_FILE = "daily_trading_state.json"
 SEEN_TRADES_FILE = "seen_trades.json"
 OPEN_POSITIONS_FILE = "open_positions.json"
+
+# league -> Kalshi series ticker for moneyline (game winner) markets
+LEAGUE_SERIES = {
+    "nfl": "KXNFLGAME",
+    "ncaaf": "KXNCAAFGAME",
+}
 
 
 def send_discord(webhook_url, message):
@@ -164,15 +170,65 @@ def find_moneyline_edges(league):
     return edges
 
 
-def get_open_nfl_moneyline_markets(client):
-    return client.get_markets(series_ticker="KXNFLGAME", status=MarketStatus.OPEN, limit=1000)
+def get_open_markets(client, series_ticker):
+    return client.get_markets(series_ticker=series_ticker, status=MarketStatus.OPEN, limit=1000)
 
 
-def find_kalshi_match(markets, team_full_name):
+def group_kalshi_markets_by_event(markets):
+    """Groups markets by event_ticker, e.g. KXNCAAFGAME-26SEP19PURUCLA -> [market_UCLA, market_PUR]"""
+    events = defaultdict(list)
     for m in markets:
-        title = (m.title or "").replace(" wins", "").strip()
-        if title and title.upper() in team_full_name.upper():
-            return m
+        event_ticker = getattr(m, "event_ticker", None)
+        if event_ticker:
+            events[event_ticker].append(m)
+    return events
+
+
+def short_name(kalshi_title):
+    return (kalshi_title or "").replace(" wins", "").strip().upper()
+
+
+def safe_match_event(kalshi_events, away_team, home_team):
+    """
+    Finds the Kalshi event whose two team markets correctly and
+    UNAMBIGUOUSLY pair up with (away_team, home_team). Returns
+    {team_full_name: market} on success, or None if no safe match
+    is found (better to skip a trade than risk matching the wrong team,
+    e.g. 'Washington' vs 'Washington State').
+    """
+    away_upper = away_team.upper()
+    home_upper = home_team.upper()
+
+    for event_ticker, markets in kalshi_events.items():
+        if len(markets) != 2:
+            continue
+
+        m1, m2 = markets
+        s1, s2 = short_name(m1.title), short_name(m2.title)
+
+        # Try both possible pairings and check for exclusivity
+        pairings = [
+            {(s1, away_upper), (s2, home_upper)},
+            {(s1, home_upper), (s2, away_upper)},
+        ]
+
+        def pairing_is_safe(short, full, other_full):
+            # short must be found in its assigned full name...
+            if short not in full:
+                return False
+            # ...and NOT be a confusingly-also-valid substring of the other team
+            if short in other_full:
+                return False
+            return True
+
+        # Pairing 1: s1<->away, s2<->home
+        if pairing_is_safe(s1, away_upper, home_upper) and pairing_is_safe(s2, home_upper, away_upper):
+            return {away_team: m1, home_team: m2}
+
+        # Pairing 2: s1<->home, s2<->away
+        if pairing_is_safe(s1, home_upper, away_upper) and pairing_is_safe(s2, away_upper, home_upper):
+            return {home_team: m1, away_team: m2}
+
     return None
 
 
@@ -218,10 +274,6 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg):
 
 
 def check_and_close_profitable_positions(client):
-    """
-    For every open position, check the current market price. If it's up
-    PROFIT_TARGET_PCT or more from entry, sell to realize the gain.
-    """
     positions = load_open_positions()
     if not positions:
         return
@@ -266,61 +318,83 @@ def check_and_close_profitable_positions(client):
                 send_discord(DISCORD_WEBHOOK_UPDATES, err)
 
 
+def process_league(client, league, seen_trades):
+    series_ticker = LEAGUE_SERIES[league]
+    kalshi_markets = get_open_markets(client, series_ticker)
+    kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
+    print(f"[{league}] Kalshi open events: {len(kalshi_events)}")
+
+    edges = find_moneyline_edges(league)
+    print(f"[{league}] Moneyline edges found: {len(edges)}")
+
+    # Group edges by event_id so we only do the event-matching lookup once per game
+    edges_by_event = defaultdict(list)
+    for e in edges:
+        edges_by_event[e["event_id"]].append(e)
+
+    for event_id, event_edges in edges_by_event.items():
+        away_team = event_edges[0]["away_team"]
+        home_team = event_edges[0]["home_team"]
+
+        match_map = safe_match_event(kalshi_events, away_team, home_team)
+        if not match_map:
+            continue  # no safe, unambiguous match found — skip rather than risk a wrong trade
+
+        for edge in event_edges:
+            trade_key = f"{edge['event_id']}:{edge['selection']}"
+            if trade_key in seen_trades:
+                continue
+
+            match = match_map.get(edge["selection"])
+            if not match:
+                continue
+
+            yes_ask = getattr(match, "yes_ask_dollars", None)
+            if not yes_ask:
+                continue
+
+            kalshi_price = float(yes_ask)
+            edge_pct = (edge["fair_prob"] - kalshi_price) * 100
+            if edge_pct < MIN_EDGE_PCT:
+                continue
+
+            msg = (
+                f"[{league.upper()}] Matched Edge: {edge['selection']}\n"
+                f"Matchup: {edge['away_team']} @ {edge['home_team']}\n"
+                f"Kalshi ticker: {match.ticker}\n"
+                f"Kalshi price: ${kalshi_price:.2f}\n"
+                f"Sharp fair probability: {edge['fair_prob']*100:.1f}%\n"
+                f"Edge: +{edge_pct:.2f}%"
+            )
+
+            count_fp = max(1.0, MAX_STAKE_PER_TRADE / kalshi_price)
+            executed = execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg)
+            if executed:
+                seen_trades.add(trade_key)
+                save_seen_trades(seen_trades)
+
+
 def run_once(client, seen_trades):
     send_discord(DISCORD_WEBHOOK_UPDATES, f"Scan starting at {datetime.now().isoformat()}")
 
-    # 1. Check existing positions for profit-taking first
     check_and_close_profitable_positions(client)
 
-    # 2. Look for new edges to enter
-    kalshi_markets = get_open_nfl_moneyline_markets(client)
-    print(f"Kalshi open NFL moneyline markets: {len(kalshi_markets)}")
-
-    all_edges = find_moneyline_edges("nfl")
-    print(f"Moneyline edges found: {len(all_edges)}")
-
-    for edge in all_edges:
-        trade_key = f"{edge['event_id']}:{edge['selection']}"
-        if trade_key in seen_trades:
-            continue
-
-        match = find_kalshi_match(kalshi_markets, edge["selection"])
-        if not match:
-            continue
-
-        yes_ask = getattr(match, "yes_ask_dollars", None)
-        if not yes_ask:
-            continue
-
-        kalshi_price = float(yes_ask)
-        edge_pct = (edge["fair_prob"] - kalshi_price) * 100
-        if edge_pct < MIN_EDGE_PCT:
-            continue
-
-        msg = (
-            f"Matched Edge: {edge['selection']}\n"
-            f"Matchup: {edge['away_team']} @ {edge['home_team']}\n"
-            f"Kalshi ticker: {match.ticker}\n"
-            f"Kalshi price: ${kalshi_price:.2f}\n"
-            f"Sharp fair probability: {edge['fair_prob']*100:.1f}%\n"
-            f"Edge: +{edge_pct:.2f}%"
-        )
-
-        count_fp = max(1.0, MAX_STAKE_PER_TRADE / kalshi_price)
-        executed = execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg)
-        if executed:
-            seen_trades.add(trade_key)
-            save_seen_trades(seen_trades)
+    for league in LEAGUE_SERIES.keys():
+        try:
+            process_league(client, league, seen_trades)
+        except Exception as e:
+            print(f"[{league}] error: {e}")
+            send_discord(DISCORD_WEBHOOK_UPDATES, f"[{league}] scan error: {e}")
 
 
 def main():
-    print("--- AR894 Autonomous Worker (NFL Moneyline, pykalshi, with profit-taking) ---")
+    print("--- AR894 Autonomous Worker (NFL + NCAAF Moneyline, pykalshi) ---")
     print(f"MAX_STAKE_PER_TRADE=${MAX_STAKE_PER_TRADE}  DAILY_LOSS_CAP=${DAILY_LOSS_CAP}  PROFIT_TARGET_PCT={PROFIT_TARGET_PCT}%  interval={SCAN_INTERVAL_SECONDS}s")
 
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Worker started (with profit-taking enabled).")
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Worker started (NFL + NCAAF, profit-taking enabled).")
     while True:
         try:
             run_once(client, seen_trades)
