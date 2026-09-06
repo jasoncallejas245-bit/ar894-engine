@@ -1,16 +1,12 @@
 import os
 import time
 import json
+import tempfile
 from datetime import datetime, date
 from collections import defaultdict
 
 import requests
 from pykalshi import KalshiClient, Action, Side, MarketStatus
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-import tempfile
 
 if os.getenv("KALSHI_PRIVATE_KEY_CONTENT"):
     _key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
@@ -25,14 +21,16 @@ SHARPAPI_KEY = os.environ["SHARPAPI_KEY"]
 DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
 DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 
-MAX_STAKE_PER_TRADE = float(os.getenv("MAX_STAKE_PER_TRADE", "2.00"))
+MAX_STAKE_PER_TRADE = float(os.getenv("MAX_STAKE_PER_TRADE", "5.00"))
 DAILY_LOSS_CAP = float(os.getenv("DAILY_LOSS_CAP", "5.00"))
+PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))  # sell once up this %
 MIN_EDGE_PCT = 2.0
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
 DAILY_STATE_FILE = "daily_trading_state.json"
 SEEN_TRADES_FILE = "seen_trades.json"
+OPEN_POSITIONS_FILE = "open_positions.json"
 
 
 def send_discord(webhook_url, message):
@@ -73,6 +71,18 @@ def load_seen_trades():
 def save_seen_trades(seen):
     with open(SEEN_TRADES_FILE, "w") as f:
         json.dump(list(seen), f)
+
+
+def load_open_positions():
+    if os.path.exists(OPEN_POSITIONS_FILE):
+        with open(OPEN_POSITIONS_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_open_positions(positions):
+    with open(OPEN_POSITIONS_FILE, "w") as f:
+        json.dump(positions, f)
 
 
 def remove_vig_two_way(prob_a, prob_b):
@@ -166,7 +176,7 @@ def find_kalshi_match(markets, team_full_name):
     return None
 
 
-def execute_kalshi_trade(client, ticker, price_dollars, count_fp, discord_msg):
+def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg):
     state = load_daily_state()
     if daily_cap_exceeded(state):
         print(f"Daily loss cap reached — skipping {ticker}")
@@ -174,34 +184,95 @@ def execute_kalshi_trade(client, ticker, price_dollars, count_fp, discord_msg):
 
     stake = price_dollars * count_fp
     if stake > MAX_STAKE_PER_TRADE:
-        count_fp = max(1, MAX_STAKE_PER_TRADE / price_dollars)
+        count_fp = max(1.0, MAX_STAKE_PER_TRADE / price_dollars)
         stake = price_dollars * count_fp
 
     send_discord(DISCORD_WEBHOOK_BETS, discord_msg + f"\nStake: ${stake:.2f}")
 
     try:
-        order = client.portfolio.place_order(
+        client.portfolio.place_order(
             ticker,
             Action.BUY,
             Side.YES,
             count_fp=str(round(count_fp, 2)),
             yes_price_dollars=f"{price_dollars:.4f}",
         )
-        print(f"✅ Trade executed: {ticker} x{count_fp}")
-        send_discord(DISCORD_WEBHOOK_BETS, f"✅ Executed: `{ticker}` x{count_fp}")
+        print(f"Trade executed: {ticker} x{count_fp}")
+        send_discord(DISCORD_WEBHOOK_BETS, f"Executed BUY: {ticker} x{count_fp:.2f} @ ${price_dollars:.2f}")
         state["trades_executed"] += 1
         save_daily_state(state)
+
+        positions = load_open_positions()
+        positions[ticker] = {
+            "entry_price": price_dollars,
+            "count_fp": count_fp,
+            "opened_at": datetime.now().isoformat(),
+        }
+        save_open_positions(positions)
         return True
     except Exception as e:
-        err = f"❌ Trade failed for {ticker}: {e}"
+        err = f"Trade failed for {ticker}: {e}"
         print(err)
         send_discord(DISCORD_WEBHOOK_UPDATES, err)
         return False
 
 
+def check_and_close_profitable_positions(client):
+    """
+    For every open position, check the current market price. If it's up
+    PROFIT_TARGET_PCT or more from entry, sell to realize the gain.
+    """
+    positions = load_open_positions()
+    if not positions:
+        return
+
+    for ticker, pos in list(positions.items()):
+        try:
+            market = client.get_market(ticker)
+        except Exception as e:
+            print(f"Could not check position {ticker}: {e}")
+            continue
+
+        current_bid = getattr(market, "yes_bid_dollars", None)
+        if not current_bid:
+            continue
+
+        current_bid = float(current_bid)
+        entry_price = pos["entry_price"]
+        gain_pct = ((current_bid - entry_price) / entry_price) * 100
+
+        if gain_pct >= PROFIT_TARGET_PCT:
+            try:
+                client.portfolio.place_order(
+                    ticker,
+                    Action.SELL,
+                    Side.YES,
+                    count_fp=str(pos["count_fp"]),
+                    yes_price_dollars=f"{current_bid:.4f}",
+                )
+                profit = (current_bid - entry_price) * pos["count_fp"]
+                msg = (
+                    f"Closed position: {ticker}\n"
+                    f"Entry: ${entry_price:.2f} -> Exit: ${current_bid:.2f}\n"
+                    f"Gain: +{gain_pct:.1f}% (${profit:.2f})"
+                )
+                print(msg)
+                send_discord(DISCORD_WEBHOOK_BETS, msg)
+                del positions[ticker]
+                save_open_positions(positions)
+            except Exception as e:
+                err = f"Failed to close profitable position {ticker}: {e}"
+                print(err)
+                send_discord(DISCORD_WEBHOOK_UPDATES, err)
+
+
 def run_once(client, seen_trades):
     send_discord(DISCORD_WEBHOOK_UPDATES, f"Scan starting at {datetime.now().isoformat()}")
 
+    # 1. Check existing positions for profit-taking first
+    check_and_close_profitable_positions(client)
+
+    # 2. Look for new edges to enter
     kalshi_markets = get_open_nfl_moneyline_markets(client)
     print(f"Kalshi open NFL moneyline markets: {len(kalshi_markets)}")
 
@@ -219,7 +290,6 @@ def run_once(client, seen_trades):
 
         yes_ask = getattr(match, "yes_ask_dollars", None)
         if not yes_ask:
-            print(f"No live Kalshi price yet for {match.ticker} — skipping")
             continue
 
         kalshi_price = float(yes_ask)
@@ -237,20 +307,20 @@ def run_once(client, seen_trades):
         )
 
         count_fp = max(1.0, MAX_STAKE_PER_TRADE / kalshi_price)
-        executed = execute_kalshi_trade(client, match.ticker, kalshi_price, count_fp, msg)
+        executed = execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg)
         if executed:
             seen_trades.add(trade_key)
             save_seen_trades(seen_trades)
 
 
 def main():
-    print("--- AR894 Autonomous Worker (NFL Moneyline, pykalshi) ---")
-    print(f"MAX_STAKE_PER_TRADE=${MAX_STAKE_PER_TRADE}  DAILY_LOSS_CAP=${DAILY_LOSS_CAP}  interval={SCAN_INTERVAL_SECONDS}s")
+    print("--- AR894 Autonomous Worker (NFL Moneyline, pykalshi, with profit-taking) ---")
+    print(f"MAX_STAKE_PER_TRADE=${MAX_STAKE_PER_TRADE}  DAILY_LOSS_CAP=${DAILY_LOSS_CAP}  PROFIT_TARGET_PCT={PROFIT_TARGET_PCT}%  interval={SCAN_INTERVAL_SECONDS}s")
 
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Worker started.")
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Worker started (with profit-taking enabled).")
     while True:
         try:
             run_once(client, seen_trades)
