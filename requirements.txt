@@ -20,7 +20,7 @@ MarkupSafe==3.0.3
 multidict==6.7.1
 narwhals==2.21.0
 numpy==2.0.2
-opencv-python==5.0.0.93
+opencv-python-headless==4.10.0.84
 packaging==25.0
 pandas==2.3.3
 pillow==11.3.0
