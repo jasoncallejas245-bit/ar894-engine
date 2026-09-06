@@ -39,6 +39,45 @@ LEAGUE_SERIES = {
 }
 
 
+
+
+# --- Jarvis-style voice for Discord messages ---
+import random
+
+_SCAN_LINES = [
+    "Running the numbers now, sir.",
+    "Scanning the boards. One moment.",
+    "Let's see what the markets are hiding today.",
+    "Sweeping NFL and NCAAF for anything worth your attention.",
+]
+
+_NO_EDGE_LINES = [
+    "Nothing worth acting on this cycle. The books are behaving themselves.",
+    "Quiet out there — no real edges detected.",
+    "Markets are efficient at the moment. Standing by.",
+]
+
+_EDGE_FOUND_PREFIX = "I've found something, sir. "
+_TRADE_EXECUTED_PREFIX = "Done. Order placed: "
+_POSITION_CLOSED_PREFIX = "Took the profit while it was there. "
+_ERROR_PREFIX = "Small hiccup — nothing to worry about, but you should know: "
+
+def jarvis(message, category="info"):
+    if category == "scan_start":
+        return f"{random.choice(_SCAN_LINES)}"
+    if category == "no_edge":
+        return f"{random.choice(_NO_EDGE_LINES)}"
+    if category == "edge_found":
+        return _EDGE_FOUND_PREFIX + message
+    if category == "trade_executed":
+        return _TRADE_EXECUTED_PREFIX + message
+    if category == "position_closed":
+        return _POSITION_CLOSED_PREFIX + message
+    if category == "error":
+        return _ERROR_PREFIX + message
+    return message
+
+
 def send_discord(webhook_url, message):
     try:
         resp = requests.post(webhook_url, json={"content": message}, timeout=5)
@@ -243,7 +282,7 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg):
         count_fp = max(1.0, MAX_STAKE_PER_TRADE / price_dollars)
         stake = price_dollars * count_fp
 
-    send_discord(DISCORD_WEBHOOK_BETS, discord_msg + f"\nStake: ${stake:.2f}")
+    send_discord(DISCORD_WEBHOOK_BETS, jarvis(discord_msg + f"\nStake: ${stake:.2f}", "edge_found"))
 
     try:
         client.portfolio.place_order(
@@ -254,7 +293,7 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg):
             yes_price_dollars=f"{price_dollars:.4f}",
         )
         print(f"Trade executed: {ticker} x{count_fp}")
-        send_discord(DISCORD_WEBHOOK_BETS, f"Executed BUY: {ticker} x{count_fp:.2f} @ ${price_dollars:.2f}")
+        send_discord(DISCORD_WEBHOOK_BETS, jarvis(f"{ticker} x{count_fp:.2f} @ ${price_dollars:.2f}", "trade_executed"))
         state["trades_executed"] += 1
         save_daily_state(state)
 
@@ -309,7 +348,7 @@ def check_and_close_profitable_positions(client):
                     f"Gain: +{gain_pct:.1f}% (${profit:.2f})"
                 )
                 print(msg)
-                send_discord(DISCORD_WEBHOOK_BETS, msg)
+                send_discord(DISCORD_WEBHOOK_BETS, jarvis(msg, "position_closed"))
                 del positions[ticker]
                 save_open_positions(positions)
             except Exception as e:
@@ -375,7 +414,7 @@ def process_league(client, league, seen_trades):
 
 
 def run_once(client, seen_trades):
-    send_discord(DISCORD_WEBHOOK_UPDATES, f"Scan starting at {datetime.now().isoformat()}")
+    send_discord(DISCORD_WEBHOOK_UPDATES, jarvis("", "scan_start"))
 
     check_and_close_profitable_positions(client)
 
@@ -394,13 +433,13 @@ def main():
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Worker started (NFL + NCAAF, profit-taking enabled).")
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Systems online. NFL and NCAAF under watch. I'll let you know the moment something interesting turns up.")
     while True:
         try:
             run_once(client, seen_trades)
         except Exception as e:
             print(f"[loop] error: {e}")
-            send_discord(DISCORD_WEBHOOK_UPDATES, f"Worker error: {e}")
+            send_discord(DISCORD_WEBHOOK_UPDATES, jarvis(str(e), "error"))
         time.sleep(SCAN_INTERVAL_SECONDS)
 
 
