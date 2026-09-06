@@ -10,6 +10,14 @@ from pykalshi import KalshiClient, Action, Side, MarketStatus
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+import tempfile
+
+if os.getenv("KALSHI_PRIVATE_KEY_CONTENT"):
+    _key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
+    _key_file.write(os.environ["KALSHI_PRIVATE_KEY_CONTENT"])
+    _key_file.close()
+    os.environ["KALSHI_PRIVATE_KEY_PATH"] = _key_file.name
+
 os.environ.setdefault("KALSHI_API_KEY_ID", os.environ["KALSHI_KEY_ID"])
 os.environ.setdefault("KALSHI_PRIVATE_KEY_PATH", os.environ["KALSHI_PRIVATE_KEY_PATH"])
 
