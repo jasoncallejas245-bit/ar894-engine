@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 import os
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/1545665615300399134/wjXRYEOxerWH6Rd7QnOoLJeCE-gxFq2LG2V5Vwqo3YpaHsmIgO-3akGJiEX69XwB4wC-"
+WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_BETS"]
 HISTORY_FILE = "self_learning_history.json"
 LOCK_FILE = "last_alert.lock"
 

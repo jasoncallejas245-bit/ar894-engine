@@ -1,7 +1,8 @@
+import os
 import requests
 from datetime import datetime
 
-API_KEY = "99897350c29c1d1a99eae69657625611"
+API_KEY = os.environ["ODDS_API_KEY"]
 MARKETS = "player_pass_yds"
 PRIZEPICKS_POWER_THRESHOLD = 0.577  # 57.7% Implied Probability (-136 Sharp Odds)
 
