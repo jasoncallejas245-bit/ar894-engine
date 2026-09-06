@@ -126,3 +126,4 @@ for rec in history["tracked_plays"]:
             <div style='color: {status_color}; font-weight: bold;'>{rec['status']}</div>
         </div>
     """, unsafe_allow_html=True)
+# Force Cloud Sync Sun Sep  6 01:40:40 PDT 2026
