@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 
-ENGINE_VERSION = "v4.5-CLEAN"
+ENGINE_VERSION = "v5.2"
 
 st.set_page_config(page_title=f"AR894 [{ENGINE_VERSION}] // Autonomous Sports Engine", page_icon="⚡", layout="centered")
 
