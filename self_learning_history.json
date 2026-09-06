@@ -1,0 +1,23 @@
+{
+    "tracked_plays": [
+        {
+            "platform": "Kalshi",
+            "pick": "BTC Above Range (15m)",
+            "prob": "62.4%",
+            "status": "PENDING EVALUATION"
+        },
+        {
+            "platform": "PrizePicks",
+            "pick": "LeBron James Over 24.5 Pts",
+            "prob": "61.2%",
+            "status": "HIT (+21.00)"
+        },
+        {
+            "platform": "PrizePicks",
+            "pick": "Stephen Curry Over 4.5 3PT",
+            "prob": "60.8%",
+            "status": "MISSED"
+        }
+    ],
+    "bankroll_budget": 30.0
+}
