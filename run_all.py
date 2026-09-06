@@ -1,63 +1,106 @@
 import os
+import json
 import requests
 import pandas as pd
+from datetime import datetime, date
 from pykalshi import KalshiClient
 
-DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_BETS"]
-KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID", "YOUR_ACTUAL_KALSHI_KEY_ID")
-KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "/path/to/your/kalshi_private_key.pem")
+DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
+DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
+KALSHI_KEY_ID = os.environ["KALSHI_KEY_ID"]
+KALSHI_PRIVATE_KEY_PATH = os.environ["KALSHI_PRIVATE_KEY_PATH"]
 
-def send_discord_alert(message):
+# --- Hard safety limits (edit these deliberately, not casually) ---
+MAX_STAKE_PER_TRADE = float(os.getenv("MAX_STAKE_PER_TRADE", "25.00"))
+DAILY_LOSS_CAP = float(os.getenv("DAILY_LOSS_CAP", "100.00"))
+DAILY_STATE_FILE = "daily_trading_state.json"
+
+
+def send_discord(webhook_url, message):
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
-        if response.status_code == 204:
-            print("✅ Discord alert sent successfully!")
-        else:
-            print(f"⚠️ Failed to send Discord alert, status code: {response.status_code}")
+        resp = requests.post(webhook_url, json={"content": message}, timeout=5)
+        if resp.status_code != 204:
+            print(f"⚠️ Discord non-204: {resp.status_code}")
     except Exception as e:
-        print(f"❌ Error sending Discord alert: {e}")
+        print(f"❌ Discord send failed: {e}")
 
-def analyze_betting_history():
+
+def load_daily_state():
+    today = date.today().isoformat()
+    if os.path.exists(DAILY_STATE_FILE):
+        with open(DAILY_STATE_FILE) as f:
+            state = json.load(f)
+        if state.get("date") == today:
+            return state
+    return {"date": today, "realized_loss": 0.0, "trades_executed": 0, "halted": False}
+
+
+def save_daily_state(state):
+    with open(DAILY_STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+def daily_cap_exceeded(state):
+    return state["realized_loss"] >= DAILY_LOSS_CAP or state.get("halted", False)
+
+
+def record_trade_result(state, pnl):
+    if pnl < 0:
+        state["realized_loss"] += abs(pnl)
+    state["trades_executed"] += 1
+    if state["realized_loss"] >= DAILY_LOSS_CAP:
+        state["halted"] = True
+        send_discord(
+            DISCORD_WEBHOOK_UPDATES,
+            f"🛑 **DAILY LOSS CAP HIT** (${state['realized_loss']:.2f} >= ${DAILY_LOSS_CAP:.2f}). "
+            f"Trading halted for the rest of today. Resumes automatically tomorrow.",
+        )
+    save_daily_state(state)
+
+
+def execute_trade(ticker, price, count):
+    """
+    Places a live order on Kalshi with no human confirmation step.
+    Hard-capped by MAX_STAKE_PER_TRADE and DAILY_LOSS_CAP above.
+    """
+    state = load_daily_state()
+
+    if daily_cap_exceeded(state):
+        print(f"Daily loss cap reached (${state['realized_loss']:.2f}) — skipping trade for {ticker}.")
+        return
+
+    stake = price * count
+    if stake > MAX_STAKE_PER_TRADE:
+        # Auto-scale down to the max allowed rather than rejecting outright
+        count = max(1, int(MAX_STAKE_PER_TRADE / price))
+        stake = price * count
+        print(f"Stake exceeded MAX_STAKE_PER_TRADE — scaled down to {count} contracts (${stake:.2f}).")
+
+    alert_msg = (
+        f"🚨 **Autonomous Kalshi Order** 🚨\n"
+        f"Market: `{ticker}`\nPrice: ${price}\nQuantity: {count}\nStake: ${stake:.2f}\n"
+        f"Today's realized loss so far: ${state['realized_loss']:.2f} / ${DAILY_LOSS_CAP:.2f} cap"
+    )
+    send_discord(DISCORD_WEBHOOK_BETS, alert_msg)
+
     try:
-        df = pd.read_csv('transaction_log.csv')
-        total_deposits = df[df['Type'] == 'Deposit']['Amount'].sum()
-        total_withdrawals = df[df['Type'] == 'Withdrawn']['Amount'].sum()
-        lineups_placed = len(df[df['Type'] == 'Lineup Placed'])
-        lineups_won = len(df[df['Type'] == 'Lineup Won'])
-        win_rate = (lineups_won / lineups_placed * 100) if lineups_placed > 0 else 0
-        net_flow = total_deposits - total_withdrawals
-        
-        print("--- Betting History Analysis ---")
-        print(f"Total Lineups Placed: {lineups_placed}")
-        print(f"Total Lineups Won: {lineups_won} ({win_rate:.1f}% win rate)")
-        print(f"Net Cash Flow: ${net_flow:.2f}")
-        return {"lineups_placed": lineups_placed, "lineups_won": lineups_won, "win_rate": win_rate, "net_flow": net_flow}
+        client = KalshiClient(key_id=KALSHI_KEY_ID, private_key_path=KALSHI_PRIVATE_KEY_PATH)
+        order = client.portfolio.place_order(
+            ticker=ticker, book_side="bid", price_dollars=str(price), count_fp=str(count)
+        )
+        print(f"✅ Order placed: {ticker} x{count} @ ${price}")
+        send_discord(DISCORD_WEBHOOK_BETS, f"✅ **Order Executed** for `{ticker}` — {count} contracts @ ${price}")
+        # NOTE: pnl tracking requires reconciling filled/settled orders later;
+        # this hook is where you'd call record_trade_result(state, realized_pnl)
+        # once you have real settlement data instead of estimating at order time.
     except Exception as e:
-        print(f"Could not analyze transaction_log.csv: {e}")
-        return None
+        err_msg = f"❌ Failed to place Kalshi order for `{ticker}`: {e}"
+        print(err_msg)
+        send_discord(DISCORD_WEBHOOK_UPDATES, err_msg)
 
-def propose_and_execute_trade(ticker, price, count):
-    stats = analyze_betting_history()
-    stats_text = f"\n📊 *Stats: {stats['lineups_won']}/{stats['lineups_placed']} Wins ({stats['win_rate']:.1f}%)*" if stats else ""
-    
-    alert_msg = f"🚨 **New Kalshi Trade Proposal** 🚨\nMarket: `{ticker}`\nPrice: ${price}\nQuantity: {count}{stats_text}\n\n*Check your Mac terminal to confirm or cancel!*"
-    send_discord_alert(alert_msg)
-    
-    confirmation = input(f"\nConfirm order for {ticker} ({count} contracts at ${price})? Type 'yes' to execute: ")
-    if confirmation.strip().lower() == 'yes':
-        print("Connecting to Kalshi API...")
-        try:
-            client = KalshiClient(key_id=KALSHI_KEY_ID, private_key_path=KALSHI_PRIVATE_KEY_PATH)
-            order = client.portfolio.place_order(ticker=ticker, book_side="bid", price_dollars=str(price), count_fp=str(count))
-            print("✅ Order successfully placed on Kalshi!")
-            send_discord_alert(f"✅ **Order Successfully Executed** for `{ticker}`!")
-        except Exception as e:
-            err_msg = f"❌ Failed to place Kalshi order: {e}"
-            print(err_msg)
-            send_discord_alert(err_msg)
-    else:
-        print("Trade cancelled by user in terminal.")
-        send_discord_alert("❌ Trade proposal cancelled by user.")
 
 if __name__ == "__main__":
-    propose_and_execute_trade(ticker="KXBTC-25MAR15-B100000", price=0.10, count=5)
+    print("--- Autonomous mode: no human confirmation, hard safety caps active ---")
+    print(f"MAX_STAKE_PER_TRADE=${MAX_STAKE_PER_TRADE}  DAILY_LOSS_CAP=${DAILY_LOSS_CAP}")
+    # This entrypoint is meant to be called by worker.py's scan loop with
+    # real signals from prop_analyzer.py — see worker.py's run_scan_once().
