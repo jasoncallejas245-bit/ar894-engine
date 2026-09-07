@@ -7,6 +7,54 @@ import os as _os
 DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = _os.path.join(DATA_DIR, "paper_trades.json")
 BTC_PRICE_HISTORY_FILE = _os.path.join(DATA_DIR, "btc_price_history.json")
+PAPER_BANKROLL_FILE = _os.path.join(DATA_DIR, "paper_bankroll.json")
+
+# Every paper trade now sizes itself like a real $5 bet, instead of the old
+# "1 contract at entry price" math -- so the logged hypothetical P&L reflects
+# what would actually happen if this pick had been placed for real at the
+# stake size this bot actually uses, and the numbers are comparable across
+# BTC and moneyline.
+PAPER_STAKE_DOLLARS = float(_os.getenv("PAPER_STAKE_DOLLARS", "5.0"))
+
+# Starting notional bankroll per category, purely for tracking "are we up or
+# down against a hypothetical budget" over time -- has no bearing on real
+# money, just makes the paper data readable as a running balance.
+PAPER_STARTING_BANKROLL = float(_os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
+
+
+def load_paper_bankroll():
+    if os.path.exists(PAPER_BANKROLL_FILE):
+        with open(PAPER_BANKROLL_FILE) as f:
+            return json.load(f)
+    return {
+        "moneyline": {"balance": PAPER_STARTING_BANKROLL, "history": []},
+        "btc": {"balance": PAPER_STARTING_BANKROLL, "history": []},
+    }
+
+
+def save_paper_bankroll(data):
+    with open(PAPER_BANKROLL_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
+    """
+    Applies one resolved paper trade's P&L to that category's running
+    notional bankroll and logs whether it's currently down against its
+    starting budget. Returns (new_balance, is_down, down_by).
+    """
+    bankroll = load_paper_bankroll()
+    cat = bankroll.setdefault(category, {"balance": PAPER_STARTING_BANKROLL, "history": []})
+    cat["balance"] = round(cat["balance"] + pnl, 4)
+    is_down = cat["balance"] < PAPER_STARTING_BANKROLL
+    down_by = round(PAPER_STARTING_BANKROLL - cat["balance"], 4) if is_down else 0.0
+    cat["history"].append({
+        "id": ticker_or_id, "pnl": pnl, "balance_after": cat["balance"],
+        "is_down": is_down, "down_by": down_by, "note": note,
+        "at": datetime.now().isoformat(),
+    })
+    save_paper_bankroll(bankroll)
+    return cat["balance"], is_down, down_by
 
 
 def load_paper_trades():
@@ -79,14 +127,19 @@ def purge_stale_moneyline_picks(client, near_term_hours=None):
     return len(kept), removed
 
 
-def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0):
+def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
     and NO for a genuine mispricing edge, skips the game entirely if
-    neither side clears the bar) -- so paper trading actually validates
-    the same method used for real money, just extended to more sports.
+    neither side clears the bar, and only backs the side actually favored
+    to win -- same FAVORITE_MIN_PROB bar real trading uses) -- so paper
+    trading actually validates the same method used for real money, just
+    extended to more sports and with no cap on how many picks it can make.
     """
     from collections import defaultdict as dd
+
+    if favorite_min_prob is None:
+        favorite_min_prob = get_effective_favorite_min_prob()  # picks up whatever the learning step has raised it to
 
     grouped = dd(dict)
     for row in sharpapi_rows:
@@ -165,7 +218,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             fair_prob = fair_probs[selection]
             edge_pct = (fair_prob - yes_price) * 100
 
-            if edge_pct >= min_edge_pct:
+            if edge_pct >= min_edge_pct and fair_prob >= favorite_min_prob:
                 candidate = {
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
@@ -235,18 +288,35 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
         pick["resolved_at"] = datetime.now().isoformat()
 
         if pick.get("entry_price"):
-            # Hypothetical: 1 contract at entry_price. Win = payout $1, Loss = lose the stake.
-            pick["hypothetical_pnl"] = (1.0 - pick["entry_price"]) if won else -pick["entry_price"]
+            # $5-stake simulation: same sizing math real trading uses
+            # (stake_dollars / price, minimum 1 contract), not the old
+            # "1 contract at entry_price" model, so the hypothetical P&L
+            # reflects what a real $5 bet on this pick would have made.
+            contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
+            pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
+            pick["contracts"] = contracts
+            pick["hypothetical_pnl"] = round((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts, 4)
         else:
             pick["hypothetical_pnl"] = None
 
         changed = True
+
+        balance, is_down, down_by = (None, None, None)
+        if pick["hypothetical_pnl"] is not None:
+            balance, is_down, down_by = record_paper_bankroll_change(
+                "moneyline", pick["hypothetical_pnl"], pick.get("kalshi_ticker"),
+                note=f"{pick['league']} {pick['picked_team']} {pick['status']}",
+            )
+
         if send_discord_fn and webhook:
             pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A (no entry price captured)"
+            bankroll_str = ""
+            if balance is not None:
+                bankroll_str = f" | paper bankroll: ${balance:.2f}" + (f" (down ${down_by:.2f})" if is_down else "")
             send_discord_fn(
                 webhook,
                 f"[RESOLVED - {pick['league']}] {pick['picked_team']}: {pick['status'].upper()} "
-                f"(hypothetical P&L: {pnl_str})",
+                f"(hypothetical P&L: {pnl_str}{bankroll_str})",
             )
 
     if changed:
@@ -369,14 +439,28 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
         pick["resolved_at"] = datetime.now().isoformat()
 
         if pick.get("entry_price"):
-            pick["hypothetical_pnl"] = (1.0 - pick["entry_price"]) if won else -pick["entry_price"]
+            contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
+            pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
+            pick["contracts"] = contracts
+            pick["hypothetical_pnl"] = round((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts, 4)
         else:
             pick["hypothetical_pnl"] = None
 
         changed = True
+
+        balance, is_down, down_by = (None, None, None)
+        if pick["hypothetical_pnl"] is not None:
+            balance, is_down, down_by = record_paper_bankroll_change(
+                "btc", pick["hypothetical_pnl"], pick.get("ticker"),
+                note=f"BTC {pick['predicted_direction']} {pick['status']}",
+            )
+
         if send_discord_fn and webhook:
             pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A"
-            send_discord_fn(webhook, f"[RESOLVED - BTC] {pick['title']}: {pick['status'].upper()} (hypothetical P&L: {pnl_str})")
+            bankroll_str = ""
+            if balance is not None:
+                bankroll_str = f" | paper bankroll: ${balance:.2f}" + (f" (down ${down_by:.2f})" if is_down else "")
+            send_discord_fn(webhook, f"[RESOLVED - BTC] {pick['title']}: {pick['status'].upper()} (hypothetical P&L: {pnl_str}{bankroll_str})")
 
     if changed:
         save_paper_trades(paper_data)
@@ -410,6 +494,36 @@ def get_paper_trade_summary():
 # ---------------------------------------------------------------------------
 MIN_SAMPLE_FOR_ADJUSTMENT = 30
 
+ADAPTIVE_SETTINGS_FILE = _os.path.join(DATA_DIR, "adaptive_settings.json")
+MONEYLINE_FAVORITE_MIN_PROB_DEFAULT = float(_os.getenv("FAVORITE_MIN_PROB", "0.55"))
+# How far above the current favorite bar counts as "close enough that we
+# shouldn't yet trust it" -- e.g. a 0.55 bar with a 0.05 band means picks
+# with fair prob in [0.55, 0.60) get watched as a separate bucket.
+CLOSE_GAME_BAND = 0.05
+
+
+def load_adaptive_settings():
+    if _os.path.exists(ADAPTIVE_SETTINGS_FILE):
+        with open(ADAPTIVE_SETTINGS_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_adaptive_settings(settings):
+    with open(ADAPTIVE_SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def get_effective_favorite_min_prob():
+    """
+    The currently-learned "this counts as a real favorite" bar. Starts at
+    MONEYLINE_FAVORITE_MIN_PROB_DEFAULT and only ever gets raised (never
+    lowered automatically) once maybe_adjust_moneyline_favorite_threshold
+    finds real evidence that picks near the old bar were too close to call.
+    """
+    return load_adaptive_settings().get("moneyline_favorite_min_prob", MONEYLINE_FAVORITE_MIN_PROB_DEFAULT)
+
+
 def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
     """
     If there's enough resolved BTC history, checks whether a different
@@ -426,18 +540,71 @@ def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
     wins = sum(1 for t in resolved if t["status"] == "won")
     win_rate = wins / len(resolved)
 
-    settings_path = _os.path.join(DATA_DIR, "adaptive_settings.json")
-    settings = {}
-    if _os.path.exists(settings_path):
-        with open(settings_path) as f:
-            settings = json.load(f)
-
+    settings = load_adaptive_settings()
     settings["btc_momentum_window"] = settings.get("btc_momentum_window", 3)
     settings["btc_sample_size"] = len(resolved)
     settings["btc_win_rate"] = win_rate
     settings["last_adjusted"] = datetime.now().isoformat()
+    save_adaptive_settings(settings)
 
-    with open(settings_path, "w") as f:
-        json.dump(settings, f, indent=2)
+    return settings
 
+
+def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None):
+    """
+    The "learning" half of moneyline paper trading: once there's a real
+    sample, checks whether picks sitting just above the current favorite
+    bar (the "close" bucket -- too close to call, even though they cleared
+    FAVORITE_MIN_PROB) are actually losing money, separately from clearer
+    favorites further above the bar. If the close bucket has its own
+    real sample size and a negative hypothetical P&L, raises the bar so
+    future picks skip that zone -- this is how it "notices" a favorite
+    wasn't safe enough. Only ever tightens the bar, never loosens it on
+    its own (loosening on noise is exactly the kind of mistake this is
+    meant to avoid). Below MIN_SAMPLE_FOR_ADJUSTMENT resolved picks total,
+    or below it for the close bucket specifically, this is a no-op.
+    """
+    paper_data = load_paper_trades()
+    resolved = [
+        t for t in paper_data["moneyline"]
+        if t["status"] in ("won", "lost") and t.get("hypothetical_pnl") is not None
+    ]
+    if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
+        return None
+
+    current_bar = get_effective_favorite_min_prob()
+    close_band_top = round(current_bar + CLOSE_GAME_BAND, 4)
+
+    close_bucket = [t for t in resolved if current_bar <= t["market_probability"] < close_band_top]
+    clear_bucket = [t for t in resolved if t["market_probability"] >= close_band_top]
+
+    settings = load_adaptive_settings()
+    settings["moneyline_favorite_min_prob"] = current_bar
+    settings["moneyline_sample_size"] = len(resolved)
+    settings["moneyline_close_bucket_size"] = len(close_bucket)
+    settings["moneyline_clear_bucket_size"] = len(clear_bucket)
+    if clear_bucket:
+        settings["moneyline_clear_bucket_pnl"] = round(sum(t["hypothetical_pnl"] for t in clear_bucket), 4)
+        settings["moneyline_clear_bucket_win_rate"] = sum(1 for t in clear_bucket if t["status"] == "won") / len(clear_bucket)
+
+    if len(close_bucket) >= MIN_SAMPLE_FOR_ADJUSTMENT:
+        close_pnl = round(sum(t["hypothetical_pnl"] for t in close_bucket), 4)
+        close_win_rate = sum(1 for t in close_bucket if t["status"] == "won") / len(close_bucket)
+        settings["moneyline_close_bucket_pnl"] = close_pnl
+        settings["moneyline_close_bucket_win_rate"] = close_win_rate
+
+        if close_pnl < 0 and close_band_top > current_bar:
+            settings["moneyline_favorite_min_prob"] = close_band_top
+            settings["last_adjusted"] = datetime.now().isoformat()
+            save_adaptive_settings(settings)
+            if send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[LEARNING] Favorites in the {current_bar*100:.0f}-{close_band_top*100:.0f}% fair-odds range "
+                    f"went {close_win_rate*100:.0f}% win rate (${close_pnl:+.2f} over {len(close_bucket)} picks) -- "
+                    f"too close to trust. Raising the favorite bar to {close_band_top*100:.0f}% for future picks."
+                )
+            return settings
+
+    save_adaptive_settings(settings)
     return settings

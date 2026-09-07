@@ -90,7 +90,7 @@ PAGE_TEMPLATE = """
     <div class="muted">No real trades logged yet.</div>
   {% endif %}
 
-  <h2>Paper Trading: Moneyline</h2>
+  <h2>Paper Trading: Moneyline (${{ "%.0f"|format(paper_stake) }}/pick)</h2>
   <div class="card">
     <div class="row"><span>Total picks</span><span>{{ ml_summary.total_picks }}</span></div>
     <div class="row"><span>Resolved</span><span>{{ ml_summary.resolved }}</span></div>
@@ -102,9 +102,14 @@ PAGE_TEMPLATE = """
       </span>
     </div>
     {% endif %}
+    <div class="row"><span>Paper bankroll (started ${{ "%.0f"|format(paper_starting_bankroll) }})</span>
+      <span class="{{ 'green' if not ml_bankroll_down else 'red' }}">
+        ${{ "%.2f"|format(ml_bankroll_balance) }}{% if ml_bankroll_down %} (down ${{ "%.2f"|format(ml_bankroll_down_by) }}){% endif %}
+      </span>
+    </div>
   </div>
 
-  <h2>Paper Trading: BTC 15min</h2>
+  <h2>Paper Trading: BTC 15min (${{ "%.0f"|format(paper_stake) }}/pick)</h2>
   <div class="card">
     <div class="row"><span>Total picks</span><span>{{ btc_summary.total_picks }}</span></div>
     <div class="row"><span>Resolved</span><span>{{ btc_summary.resolved }}</span></div>
@@ -115,6 +120,31 @@ PAGE_TEMPLATE = """
         ${{ "%.2f"|format(btc_summary.total_hypothetical_pnl or 0) }}
       </span>
     </div>
+    {% endif %}
+    <div class="row"><span>Paper bankroll (started ${{ "%.0f"|format(paper_starting_bankroll) }})</span>
+      <span class="{{ 'green' if not btc_bankroll_down else 'red' }}">
+        ${{ "%.2f"|format(btc_bankroll_balance) }}{% if btc_bankroll_down %} (down ${{ "%.2f"|format(btc_bankroll_down_by) }}){% endif %}
+      </span>
+    </div>
+  </div>
+
+  <h2>Learning / Adaptive Settings</h2>
+  <div class="card">
+    <div class="row"><span>Moneyline favorite bar (started at {{ "%.0f"|format(favorite_default*100) }}%)</span>
+      <span>{{ "%.0f"|format(favorite_current*100) }}%{% if favorite_current > favorite_default %} (raised){% endif %}</span>
+    </div>
+    <div class="row"><span>Moneyline resolved sample</span><span>{{ adaptive.moneyline_sample_size or 0 }} / {{ min_sample }} needed</span></div>
+    {% if adaptive.moneyline_close_bucket_size %}
+    <div class="row"><span>"Too close" bucket ({{ adaptive.moneyline_close_bucket_size }} picks)</span>
+      <span class="{{ 'green' if (adaptive.moneyline_close_bucket_pnl or 0) >= 0 else 'red' }}">
+        {{ "%.0f"|format((adaptive.moneyline_close_bucket_win_rate or 0)*100) }}% win, ${{ "%.2f"|format(adaptive.moneyline_close_bucket_pnl or 0) }}
+      </span>
+    </div>
+    {% endif %}
+    <div class="row"><span>BTC momentum window</span><span>{{ adaptive.btc_momentum_window or 3 }} readings</span></div>
+    <div class="row"><span>BTC resolved sample</span><span>{{ adaptive.btc_sample_size or 0 }} / {{ min_sample }} needed</span></div>
+    {% if adaptive.last_adjusted %}
+    <div class="row"><span class="muted">Last adjusted</span><span class="muted">{{ adaptive.last_adjusted }}</span></div>
     {% endif %}
   </div>
 
@@ -166,6 +196,10 @@ def dashboard():
 
     trade_log = load_json("trade_audit_log.json", [])
     summary = pt.get_paper_trade_summary()
+    bankroll = pt.load_paper_bankroll()
+    ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
+    btc_bank = bankroll.get("btc", {"balance": pt.PAPER_STARTING_BANKROLL})
+    adaptive = pt.load_adaptive_settings()
 
     return render_template_string(
         PAGE_TEMPLATE,
@@ -179,6 +213,18 @@ def dashboard():
         available_budget=available_budget,
         realized_profit=realized_profit,
         pending_deposit=led.get("pending_deposit_amount"),
+        paper_stake=pt.PAPER_STAKE_DOLLARS,
+        paper_starting_bankroll=pt.PAPER_STARTING_BANKROLL,
+        ml_bankroll_balance=ml_bank["balance"],
+        ml_bankroll_down=ml_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
+        ml_bankroll_down_by=max(0.0, pt.PAPER_STARTING_BANKROLL - ml_bank["balance"]),
+        btc_bankroll_balance=btc_bank["balance"],
+        btc_bankroll_down=btc_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
+        btc_bankroll_down_by=max(0.0, pt.PAPER_STARTING_BANKROLL - btc_bank["balance"]),
+        adaptive=adaptive,
+        favorite_default=pt.MONEYLINE_FAVORITE_MIN_PROB_DEFAULT,
+        favorite_current=pt.get_effective_favorite_min_prob(),
+        min_sample=pt.MIN_SAMPLE_FOR_ADJUSTMENT,
     )
 
 

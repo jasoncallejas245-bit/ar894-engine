@@ -32,7 +32,19 @@ MIN_EDGE_PCT = 2.0
 # edge happens to point -- betting AGAINST a favorite for a small edge is
 # a coinflip-ish, higher-variance play even when the math is sound. This
 # keeps trades to backing favorites, which is more conservative.
+#
+# This is now a LEARNED value, not a fixed constant: paper_trading's
+# maybe_adjust_moneyline_favorite_threshold() raises it once there's real
+# evidence that favorites just above the old bar were too close to trust.
+# get_favorite_min_prob() always reads the current learned value live, so
+# real trading (once a league is enabled here) picks up the same lessons
+# paper trading learns. The env var is only the starting point before any
+# adjustment has ever happened.
 FAVORITE_MIN_PROB = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
+
+
+def get_favorite_min_prob():
+    return pt.get_effective_favorite_min_prob()
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 # Sports (SharpAPI) scanning stays on its own slower cadence -- games move
 # on a much longer clock than BTC's 15-minute windows, and SharpAPI calls
@@ -58,6 +70,19 @@ LEAGUE_SERIES = {
     # "wta": "KXWTAMATCH",  # dropped: SharpAPI/Kalshi cover different WTA
     # tournament tiers right now, zero overlap -- revisit later if that changes
 }
+
+# Real-money sports trading is paused entirely -- every league in
+# LEAGUE_SERIES still gets paper-traded (unlimited, logs everything) so
+# there's a track record to review, but nothing here places real orders
+# right now. Move a league in here only once its paper results (and the
+# learning model's adjustments) have been reviewed and real trading is
+# deliberately turned back on.
+REAL_TRADING_LEAGUES = set()
+
+# BTC real-money trading is paused too, for the same reason -- everything
+# is 100% paper right now while the learning model builds up a track
+# record. Flip back on with BTC_REAL_TRADING_ENABLED=true once ready.
+BTC_REAL_TRADING_ENABLED = os.getenv("BTC_REAL_TRADING_ENABLED", "false").lower() == "true"
 
 # Sports where Kalshi's short title is an individual's SURNAME, not a full
 # team name -- these need surname matching instead of exact-full-name
@@ -528,10 +553,11 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             trade_edge_pct = None
             trade_fair_prob = None
 
+            favorite_min_prob = get_favorite_min_prob()
             if yes_ask:
                 yes_price = float(yes_ask)
                 yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
-                if yes_edge_pct >= MIN_EDGE_PCT and edge["fair_prob"] >= FAVORITE_MIN_PROB:
+                if yes_edge_pct >= MIN_EDGE_PCT and edge["fair_prob"] >= favorite_min_prob:
                     side_to_trade = Side.YES
                     trade_price = yes_price
                     trade_edge_pct = yes_edge_pct
@@ -541,7 +567,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 no_price = float(no_ask)
                 fair_prob_no = 1 - edge["fair_prob"]
                 no_edge_pct = (fair_prob_no - no_price) * 100
-                if no_edge_pct >= MIN_EDGE_PCT and fair_prob_no >= FAVORITE_MIN_PROB:
+                if no_edge_pct >= MIN_EDGE_PCT and fair_prob_no >= favorite_min_prob:
                     side_to_trade = Side.NO
                     trade_price = no_price
                     trade_edge_pct = no_edge_pct
@@ -659,13 +685,16 @@ def run_once(client, seen_trades, run_sports_scan=True):
         run_btc_and_resolution(client)
         return
 
-    # Real trading + paper tracking for money-risk leagues
+    # Real trading only for REAL_TRADING_LEAGUES; every league still gets
+    # paper-traded (unlimited volume, full logging) regardless.
     for league in LEAGUE_SERIES.keys():
         try:
             print(f"[{league}] fetching odds...")
             rows = fetch_sharpapi_odds(league)
             print(f"[{league}] got {len(rows)} odds rows")
-            process_league_real_trading(client, league, seen_trades, rows)
+
+            if league in REAL_TRADING_LEAGUES:
+                process_league_real_trading(client, league, seen_trades, rows)
 
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
@@ -683,7 +712,8 @@ def run_btc_and_resolution(client):
     decoupled from SPORTS_SCAN_INTERVAL_SECONDS."""
     try:
         print("[btc] checking momentum...")
-        process_btc_real_trading(client)
+        if BTC_REAL_TRADING_ENABLED:
+            process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
@@ -700,6 +730,11 @@ def run_btc_and_resolution(client):
     except Exception as e:
         print(f"[adjust] error: {e}")
 
+    try:
+        pt.maybe_adjust_moneyline_favorite_threshold(send_discord, DISCORD_WEBHOOK_UPDATES)
+    except Exception as e:
+        print(f"[adjust] moneyline threshold error: {e}")
+
 
 def start_dashboard_thread():
     import threading
@@ -715,7 +750,8 @@ def start_dashboard_thread():
 
 
 def main():
-    print("--- AR894 Autonomous Worker (real: NFL+NCAAF moneyline YES/NO | paper: consensus picks + BTC momentum) ---")
+    real_status = "NONE (paused, 100% paper)" if not REAL_TRADING_LEAGUES and not BTC_REAL_TRADING_ENABLED else f"{sorted(REAL_TRADING_LEAGUES)}{' + BTC' if BTC_REAL_TRADING_ENABLED else ''}"
+    print(f"--- AR894 Autonomous Worker (real trading: {real_status} | paper: all leagues + BTC momentum, learning-gated) ---")
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
