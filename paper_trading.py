@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import os as _os
 from state_io import atomic_write_json, safe_read_json
+import context_data
 
 DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = _os.path.join(DATA_DIR, "paper_trades.json")
@@ -247,6 +248,21 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         if best_pick is None:
             continue  # no genuine edge on either side -- skip, don't force a pick
 
+        # "Too close to call" = it cleared the favorite bar but only just --
+        # same band the learning step (maybe_adjust_moneyline_favorite_threshold)
+        # already watches for a losing pattern. For picks in that band, pull a
+        # free injury/weather context note (ESPN + NWS, see context_data.py)
+        # so there's something to look at besides the raw odds when reviewing
+        # why a "too close" pick did or didn't work out. This is informational
+        # only right now -- it does NOT change the pick or the probability.
+        is_too_close = favorite_min_prob <= best_pick["market_probability"] < (favorite_min_prob + CLOSE_GAME_BAND)
+        context_note = None
+        if is_too_close:
+            try:
+                context_note = context_data.get_context_note(league, away_team, home_team)
+            except Exception as e:
+                print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
+
         pick = {
             "league": league.upper(),
             "event_id": event_id,
@@ -260,6 +276,8 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "entry_price": best_pick["entry_price"],
             "picked_at": datetime.now().isoformat(),
             "status": "pending",
+            "is_too_close": is_too_close,
+            "context_note": context_note,
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -271,7 +289,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             lines.append(
                 f"- {p['picked_team']} [{p['side']}] ({p['away_team']} @ {p['home_team']}) "
                 f"| fair {p['market_probability']*100:.1f}% | Kalshi ${p['entry_price']:.2f} | edge +{p['edge_pct']:.1f}%"
+                + (" [TOO CLOSE]" if p["is_too_close"] else "")
             )
+            if p.get("context_note"):
+                lines.append(f"  Context: {p['context_note'].replace(chr(10), ' | ')}")
         lines.append("\n(No real money -- tracking the same edge method used for real trading)")
         send_discord_fn(webhook, "\n".join(lines))
 

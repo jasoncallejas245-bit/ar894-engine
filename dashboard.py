@@ -153,6 +153,23 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
+  <h2>Too Close To Call — Context (free ESPN/NWS data)</h2>
+  {% if too_close_picks %}
+    {% for p in too_close_picks %}
+    <div class="card">
+      <div class="row"><strong>{{ p.picked_team }}</strong><span class="badge">{{ p.league }}</span></div>
+      <div class="muted">{{ p.away_team }} @ {{ p.home_team }} | fair {{ "%.1f"|format(p.market_probability*100) }}% | {{ p.status }}</div>
+      {% if p.context_note %}
+        <div class="muted" style="white-space:pre-line; margin-top:6px;">{{ p.context_note }}</div>
+      {% else %}
+        <div class="muted" style="margin-top:6px;">No injury/weather context found for this matchup.</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="muted">No "too close" picks yet -- these are picks that clear the favorite bar but only just, so a real edge but worth a second look.</div>
+  {% endif %}
+
   <div class="muted" style="margin-top:24px; text-align:center;">AR894 Engine</div>
 </body>
 </html>
@@ -202,6 +219,9 @@ def dashboard():
     btc_bank = bankroll.get("btc", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
 
+    all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
+    too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
+
     return render_template_string(
         PAGE_TEMPLATE,
         balance=balance,
@@ -226,6 +246,7 @@ def dashboard():
         favorite_default=pt.MONEYLINE_FAVORITE_MIN_PROB_DEFAULT,
         favorite_current=pt.get_effective_favorite_min_prob(),
         min_sample=pt.MIN_SAMPLE_FOR_ADJUSTMENT,
+        too_close_picks=too_close_picks,
     )
 
 
@@ -266,11 +287,9 @@ def trade_audit_log_route():
     to compare against). Newest first. Optional ?league=ufc or ?search=berisha
     to filter.
     """
-    path = os.path.join(DATA_DIR, "trade_audit_log.json")
-    if not os.path.exists(path):
+    log = load_json("trade_audit_log.json", [])
+    if not log:
         return "No trade decisions logged yet.\n"
-    with open(path) as f:
-        log = json.load(f)
     league = request.args.get("league", "").lower()
     search = request.args.get("search", "").lower()
     if league:
