@@ -479,8 +479,22 @@ def run_once(client, seen_trades):
         print(f"[adjust] error: {e}")
 
 
+def start_dashboard_thread():
+    import threading
+    def run_dashboard():
+        try:
+            from dashboard import app
+            port = int(os.getenv("PORT", 8080))
+            app.run(host="0.0.0.0", port=port)
+        except Exception as e:
+            print(f"[dashboard] failed to start: {e}")
+    t = threading.Thread(target=run_dashboard, daemon=True)
+    t.start()
+
+
 def main():
     print("--- AR894 Autonomous Worker (real: NFL+NCAAF moneyline | paper: consensus picks + BTC momentum) ---")
+    start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
