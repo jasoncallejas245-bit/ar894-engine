@@ -286,6 +286,28 @@ def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, mat
 FEE_SAFETY_BUFFER = 1.15
 
 
+def compute_stake_dollars(available, edge_pct=None):
+    """
+    Sports: stake scales UP with how good the edge is -- a bigger edge means
+    more confidence, so it bets more. At the minimum qualifying edge
+    (MIN_EDGE_PCT), it stakes the base STAKE_PERCENT of available budget;
+    every additional multiple of that edge scales the stake up proportionally,
+    capped at 100% of budget. Pass edge_pct=None for BTC, which is always
+    allowed to use the full available budget (no sports-style edge to scale on).
+
+    Either way, the result is capped just under available/FEE_SAFETY_BUFFER so
+    it always leaves enough headroom to pass the pre-trade fee-buffer check --
+    otherwise "use the whole budget" would make that check impossible to pass.
+    """
+    if edge_pct is not None and MIN_EDGE_PCT > 0:
+        pct = min(1.0, ledger.STAKE_PERCENT * (edge_pct / MIN_EDGE_PCT))
+    else:
+        pct = 1.0
+    stake = max(available * pct, ledger.STAKE_MIN_DOLLARS)
+    headroom_cap = (available / FEE_SAFETY_BUFFER) * 0.99
+    return max(min(stake, headroom_cap), ledger.STAKE_MIN_DOLLARS)
+
+
 def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None, seen_trades=None, trade_key=None):
     side_label = "YES" if side == Side.YES else "NO"
 
@@ -531,7 +553,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 f"Kalshi price: ${trade_price:.2f}  Fair: {trade_fair_prob*100:.1f}%  Edge: +{trade_edge_pct:.2f}%"
             )
             available = ledger.get_available_budget(client, load_open_positions())
-            stake_dollars = max(available * ledger.STAKE_PERCENT, ledger.STAKE_MIN_DOLLARS)
+            stake_dollars = compute_stake_dollars(available, edge_pct=trade_edge_pct)
             count_fp = max(1.0, stake_dollars / trade_price)
             matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
             if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
@@ -576,7 +598,7 @@ def process_btc_real_trading(client):
         return
     ask_price = float(ask)
     available = ledger.get_available_budget(client, load_open_positions())
-    stake_dollars = max(available, ledger.STAKE_MIN_DOLLARS)  # BTC may use the full available budget
+    stake_dollars = compute_stake_dollars(available)  # BTC may use the full available budget
     count_fp = max(1.0, stake_dollars / ask_price)
 
     msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
@@ -696,8 +718,6 @@ def main():
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
-
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Systems online, sir. Now watching both sides of the market. I'll only speak up when there's something worth saying.")
 
     last_sports_scan = 0.0
     while True:
