@@ -144,7 +144,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         if not (0 <= hours_until <= near_term_hours):
             continue
 
-        match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp', 'wta'}))
+        match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp'}))  # matches worker.py's INDIVIDUAL_ATHLETE_LEAGUES
         if not match_map:
             continue
 

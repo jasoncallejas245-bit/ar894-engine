@@ -65,45 +65,6 @@ def get_bot_realized_profit():
     return load_bot_pnl()["total"]
 
 
-def get_realized_profit_total(client):
-    """
-    Sums Kalshi's own authoritative realized_pnl_dollars across every
-    position ever traded -- this is real profit/loss data straight from
-    the exchange, not something we compute ourselves.
-    """
-    try:
-        positions = client.portfolio.get_positions()
-        total = 0.0
-        for p in positions:
-            pnl = getattr(p, "realized_pnl_dollars", None)
-            if pnl:
-                total += float(pnl)
-        return total
-    except Exception as e:
-        print(f"[ledger] could not fetch realized P&L: {e}")
-        return 0.0
-
-
-def get_open_position_value(client):
-    """
-    Sums current market exposure of everything still open, using Kalshi's
-    own live data -- this is what current open positions are actually
-    worth right now, not their original stake.
-    """
-    try:
-        positions = client.portfolio.get_positions()
-        total = 0.0
-        for p in positions:
-            if float(getattr(p, "position_fp", 0) or 0) != 0:
-                exposure = getattr(p, "market_exposure_dollars", None)
-                if exposure:
-                    total += float(exposure)
-        return total
-    except Exception as e:
-        print(f"[ledger] could not fetch open position value: {e}")
-        return 0.0
-
-
 def get_open_position_cost_basis(open_positions_dict, live_position_tickers):
     """
     Sums the ORIGINAL stake of positions we're still holding (per our own

@@ -25,8 +25,6 @@ SHARPAPI_KEY = os.environ["SHARPAPI_KEY"]
 DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
 DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 
-MAX_STAKE_PER_TRADE = float(os.getenv("MAX_STAKE_PER_TRADE", "5.00"))
-DAILY_LOSS_CAP = float(os.getenv("DAILY_LOSS_CAP", "5.00"))
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
@@ -60,7 +58,6 @@ LEAGUE_SERIES = {
 # matching (which is correct for team sports but would match nobody here).
 INDIVIDUAL_ATHLETE_LEAGUES = {"ufc", "atp"}
 
-PAPER_ONLY_LEAGUES = {}
 
 _EDGE_FOUND_PREFIX = "I've found something, sir. "
 _TRADE_EXECUTED_PREFIX = "Done. Order placed: "
@@ -99,10 +96,6 @@ def load_daily_state():
 def save_daily_state(state):
     with open(DAILY_STATE_FILE, "w") as f:
         json.dump(state, f)
-
-
-def daily_cap_exceeded(state):
-    return state["realized_loss"] >= DAILY_LOSS_CAP or state.get("halted", False)
 
 
 def load_seen_trades():
@@ -296,6 +289,8 @@ FEE_SAFETY_BUFFER = 1.15
 def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None, seen_trades=None, trade_key=None):
     side_label = "YES" if side == Side.YES else "NO"
 
+    state = load_daily_state()
+
     available = ledger.get_available_budget(client, load_open_positions())
     stake = price_dollars * count_fp
     if stake * FEE_SAFETY_BUFFER > available:
@@ -426,6 +421,7 @@ def reconcile_settled_positions(client):
         pnl = (1.0 - entry_price) * count_fp if won else -entry_price * count_fp
 
         new_total = ledger.record_bot_trade_result(ticker, pnl, note=f"{side_label} settled {result.upper()}")
+
         send_discord(
             DISCORD_WEBHOOK_UPDATES,
             f"[SETTLED] {ticker} [{side_label}]: {'WON' if won else 'LOST'} "
@@ -643,19 +639,6 @@ def run_once(client, seen_trades, run_sports_scan=True):
             pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
-
-    # Paper-only leagues -- same tested logic, zero real-money risk
-    for league, series_ticker in PAPER_ONLY_LEAGUES.items():
-        try:
-            print(f"[{league}] (paper only) fetching odds...")
-            rows = fetch_sharpapi_odds(league)
-            print(f"[{league}] got {len(rows)} odds rows")
-
-            kalshi_markets = get_open_markets(client, series_ticker)
-            kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
-            pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
-        except Exception as e:
-            send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] paper scan error: {e}")
 
     run_btc_and_resolution(client)
 
