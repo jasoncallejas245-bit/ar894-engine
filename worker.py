@@ -10,6 +10,7 @@ import requests
 from pykalshi import KalshiClient, Action, Side, MarketStatus
 
 import paper_trading as pt
+import ledger
 
 if os.getenv("KALSHI_PRIVATE_KEY_CONTENT"):
     _key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
@@ -279,20 +280,16 @@ def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, mat
 
 
 def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None):
-    state = load_daily_state()
-    if daily_cap_exceeded(state):
-        print(f"Daily loss cap reached — skipping {ticker}")
-        return False
-
     side_label = "YES" if side == Side.YES else "NO"
+
+    available = ledger.get_available_budget(client, load_open_positions())
+    stake = price_dollars * count_fp
+    if stake > available:
+        print(f"Available budget (${available:.2f}) below required stake (${stake:.2f}) — skipping {ticker}")
+        return False
 
     if fair_prob is not None:
         log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side_label)
-
-    stake = price_dollars * count_fp
-    if stake > MAX_STAKE_PER_TRADE:
-        count_fp = max(1.0, MAX_STAKE_PER_TRADE / price_dollars)
-        stake = price_dollars * count_fp
 
     send_discord(DISCORD_WEBHOOK_BETS, _EDGE_FOUND_PREFIX + discord_msg + f"\nStake: ${stake:.2f}")
 
@@ -461,13 +458,54 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 f"Kalshi ticker: {match.ticker}\n"
                 f"Kalshi price: ${trade_price:.2f}  Fair: {trade_fair_prob*100:.1f}%  Edge: +{trade_edge_pct:.2f}%"
             )
-            count_fp = max(1.0, MAX_STAKE_PER_TRADE / trade_price)
+            count_fp = max(1.0, ledger.SPORTS_STAKE_PER_TRADE / trade_price)
             matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
             if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
                                    fair_prob=trade_fair_prob, edge_pct=trade_edge_pct,
                                    matchup=matchup_str, league=league):
                 seen_trades.add(trade_key)
                 save_seen_trades(seen_trades)
+
+
+def process_btc_real_trading(client):
+    """Real-money BTC trading using the same momentum signal as the paper
+    experiment, gated by live ledger budget (separate smaller stake size
+    than sports, given the higher uncertainty of this method)."""
+    price = pt.get_btc_spot_price()
+    if price is None:
+        return
+    history = pt.load_btc_price_history()
+    if len(history) < 3:
+        return
+    momentum = history[-1]["price"] - history[-3]["price"]
+    direction = "up" if momentum > 0 else "down"
+
+    try:
+        markets = client.get_markets(series_ticker="KXBTC15M", status=MarketStatus.OPEN, limit=5)
+    except Exception as e:
+        print(f"[btc-real] market fetch failed: {e}")
+        return
+    if not markets:
+        return
+    market = sorted(markets, key=lambda m: getattr(m, "close_time", None) or "9999")[0]
+
+    trade_key = f"btc_real:{market.ticker}"
+    seen = load_seen_trades()
+    if trade_key in seen:
+        return
+
+    side = Side.YES if direction == "up" else Side.NO
+    price_field = "yes_ask_dollars" if direction == "up" else "no_ask_dollars"
+    ask = getattr(market, price_field, None)
+    if not ask:
+        return
+    ask_price = float(ask)
+    count_fp = max(1.0, ledger.BTC_STAKE_PER_TRADE / ask_price)
+
+    msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
+    if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title):
+        seen.add(trade_key)
+        save_seen_trades(seen)
 
 
 def check_daily_summary():
@@ -539,11 +577,17 @@ def run_once(client, seen_trades):
 
     try:
         print("[btc] checking momentum...")
+        process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
-        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC paper trading error: {e}")
+        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
+
+    try:
+        ledger.check_for_new_deposit(client, send_discord, DISCORD_WEBHOOK_UPDATES, "https://ar894-engine-production.up.railway.app")
+    except Exception as e:
+        print(f"[ledger] deposit check error: {e}")
 
     try:
         check_daily_summary()
