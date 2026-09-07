@@ -164,6 +164,7 @@ def find_moneyline_edges(rows):
                 "event_id": event_id,
                 "away_team": best_row.get("away_team"),
                 "home_team": best_row.get("home_team"),
+                "event_start_time": best_row.get("event_start_time"),
                 "selection": selection,
                 "fair_prob": fair_prob,
             })
@@ -184,35 +185,73 @@ def group_kalshi_markets_by_event(markets):
     return events
 
 
+def normalize_team_name(name):
+    """
+    Normalizes team names for EXACT comparison (never substring/containment,
+    which incorrectly matches e.g. 'Texas' inside 'Texas State'). Handles the
+    'St.' vs 'State' abbreviation difference between Kalshi and SharpAPI.
+    """
+    n = (name or "").upper().strip()
+    n = n.replace(" ST.", " STATE").replace(" ST ", " STATE ")
+    if n.endswith(" ST"):
+        n = n[:-3] + " STATE"
+    n = n.replace(".", "").replace("  ", " ")
+    return n.strip()
+
+
 def short_name(kalshi_title):
-    return (kalshi_title or "").replace(" wins", "").strip().upper()
+    return (kalshi_title or "").replace(" wins", "").strip()
 
 
 def safe_match_event(kalshi_events, away_team, home_team):
-    away_upper, home_upper = away_team.upper(), home_team.upper()
+    """
+    Matches on EXACT normalized name equality only. If a school name is a
+    prefix of another real school's name (Texas / Texas State, Miami / Miami
+    OH, etc.), containment matching can silently pair the wrong real-world
+    game -- exact match means we simply skip the trade instead of guessing.
+    """
+    away_norm, home_norm = normalize_team_name(away_team), normalize_team_name(home_team)
 
     for event_ticker, markets in kalshi_events.items():
         if len(markets) != 2:
             continue
         m1, m2 = markets
-        s1, s2 = short_name(m1.title), short_name(m2.title)
+        s1_norm, s2_norm = normalize_team_name(short_name(m1.title)), normalize_team_name(short_name(m2.title))
 
-        def pairing_is_safe(short, full, other_full):
-            return short in full and short not in other_full
-
-        if pairing_is_safe(s1, away_upper, home_upper) and pairing_is_safe(s2, home_upper, away_upper):
+        if s1_norm == away_norm and s2_norm == home_norm:
             return {away_team: m1, home_team: m2}
-        if pairing_is_safe(s1, home_upper, away_upper) and pairing_is_safe(s2, away_upper, home_upper):
+        if s1_norm == home_norm and s2_norm == away_norm:
             return {home_team: m1, away_team: m2}
 
     return None
 
 
-def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg):
+TRADE_AUDIT_LOG = "trade_audit_log.json"
+
+def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league):
+    entry = {
+        "ticker": ticker, "league": league, "matchup": matchup,
+        "kalshi_price": price_dollars, "fair_prob": fair_prob, "edge_pct": edge_pct,
+        "count_fp": count_fp, "stake": price_dollars * count_fp,
+        "decided_at": datetime.now().isoformat(),
+    }
+    log = []
+    if os.path.exists(TRADE_AUDIT_LOG):
+        with open(TRADE_AUDIT_LOG) as f:
+            log = json.load(f)
+    log.append(entry)
+    with open(TRADE_AUDIT_LOG, "w") as f:
+        json.dump(log, f, indent=2)
+
+
+def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, fair_prob=None, edge_pct=None, matchup=None, league=None):
     state = load_daily_state()
     if daily_cap_exceeded(state):
         print(f"Daily loss cap reached — skipping {ticker}")
         return False
+
+    if fair_prob is not None:
+        log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league)
 
     stake = price_dollars * count_fp
     if stake > MAX_STAKE_PER_TRADE:
@@ -279,7 +318,28 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
     kalshi_markets = get_open_markets(client, series_ticker)
     kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
 
+    from datetime import timezone
+
     edges = find_moneyline_edges(sharpapi_rows)
+
+    # Only trade games starting soon (within NEAR_TERM_HOURS) -- filters
+    # out anything days away.
+    NEAR_TERM_HOURS = float(os.getenv("NEAR_TERM_HOURS", "36"))
+    now = datetime.now(timezone.utc)
+    near_term_edges = []
+    for e in edges:
+        start_str = e.get("event_start_time")
+        if not start_str:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        hours_until = (start_dt - now).total_seconds() / 3600
+        if 0 <= hours_until <= NEAR_TERM_HOURS:
+            near_term_edges.append(e)
+
+    edges = near_term_edges
     edges_by_event = defaultdict(list)
     for e in edges:
         edges_by_event[e["event_id"]].append(e)
@@ -313,7 +373,10 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 f"Kalshi price: ${kalshi_price:.2f}  Fair: {edge['fair_prob']*100:.1f}%  Edge: +{edge_pct:.2f}%"
             )
             count_fp = max(1.0, MAX_STAKE_PER_TRADE / kalshi_price)
-            if execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg):
+            matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
+            if execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg,
+                                   fair_prob=edge['fair_prob'], edge_pct=edge_pct,
+                                   matchup=matchup_str, league=league):
                 seen_trades.add(trade_key)
                 save_seen_trades(seen_trades)
 
