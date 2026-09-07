@@ -361,6 +361,36 @@ def trade_audit_log_route():
     return {"count": len(log), "decisions": log}
 
 
+@app.route("/moneyline_picks")
+def moneyline_picks_route():
+    """
+    Every moneyline PAPER pick the bot has ever made (pending or resolved),
+    across every league -- this is the direct answer to "why are there only
+    N picks / why isn't it betting on more games." A pick only gets made
+    once per Kalshi event ever (see make_moneyline_paper_picks' already_picked
+    set), so this list's length IS the total career pick count; it does not
+    reset just because the dashboard's "resolved bets" counters are low.
+    Optional ?league=nfl or ?status=pending to filter.
+    """
+    data = load_json("paper_trades.json", {"moneyline": [], "btc": []})
+    picks = data.get("moneyline", [])
+    league = request.args.get("league", "").lower()
+    status = request.args.get("status", "").lower()
+    if league:
+        picks = [p for p in picks if str(p.get("league", "")).lower() == league]
+    if status:
+        picks = [p for p in picks if str(p.get("status", "")).lower() == status]
+    by_league = {}
+    for p in data.get("moneyline", []):
+        by_league[p.get("league", "?")] = by_league.get(p.get("league", "?"), 0) + 1
+    return {
+        "total_career_picks_all_leagues": len(data.get("moneyline", [])),
+        "picks_per_league": by_league,
+        "filtered_count": len(picks),
+        "picks": list(reversed(picks)),
+    }
+
+
 @app.route("/purge_stale_moneyline_picks", methods=["POST"])
 def purge_stale_moneyline_picks_route():
     """One-time cleanup for moneyline paper picks made before the
