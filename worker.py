@@ -239,9 +239,9 @@ def safe_match_event(kalshi_events, away_team, home_team):
 
 TRADE_AUDIT_LOG = _os.path.join(DATA_DIR, "trade_audit_log.json")
 
-def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league):
+def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side="YES"):
     entry = {
-        "ticker": ticker, "league": league, "matchup": matchup,
+        "ticker": ticker, "league": league, "matchup": matchup, "side": side,
         "kalshi_price": price_dollars, "fair_prob": fair_prob, "edge_pct": edge_pct,
         "count_fp": count_fp, "stake": price_dollars * count_fp,
         "decided_at": datetime.now().isoformat(),
@@ -255,14 +255,16 @@ def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, mat
         json.dump(log, f, indent=2)
 
 
-def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, fair_prob=None, edge_pct=None, matchup=None, league=None):
+def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None):
     state = load_daily_state()
     if daily_cap_exceeded(state):
         print(f"Daily loss cap reached — skipping {ticker}")
         return False
 
+    side_label = "YES" if side == Side.YES else "NO"
+
     if fair_prob is not None:
-        log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league)
+        log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side_label)
 
     stake = price_dollars * count_fp
     if stake > MAX_STAKE_PER_TRADE:
@@ -272,17 +274,24 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, fai
     send_discord(DISCORD_WEBHOOK_BETS, _EDGE_FOUND_PREFIX + discord_msg + f"\nStake: ${stake:.2f}")
 
     try:
-        client.portfolio.place_order(
-            ticker, Action.BUY, Side.YES,
-            count_fp=str(round(count_fp, 2)),
-            yes_price_dollars=f"{price_dollars:.4f}",
+        price_kwargs = (
+            {"yes_price_dollars": f"{price_dollars:.4f}"} if side == Side.YES
+            else {"no_price_dollars": f"{price_dollars:.4f}"}
         )
-        send_discord(DISCORD_WEBHOOK_BETS, _TRADE_EXECUTED_PREFIX + f"{ticker} x{count_fp:.2f} @ ${price_dollars:.2f}")
+        client.portfolio.place_order(
+            ticker, Action.BUY, side,
+            count_fp=str(round(count_fp, 2)),
+            **price_kwargs,
+        )
+        send_discord(DISCORD_WEBHOOK_BETS, _TRADE_EXECUTED_PREFIX + f"{ticker} [{side_label}] x{count_fp:.2f} @ ${price_dollars:.2f}")
         state["trades_executed"] += 1
         save_daily_state(state)
 
         positions = load_open_positions()
-        positions[ticker] = {"entry_price": price_dollars, "count_fp": count_fp, "opened_at": datetime.now().isoformat()}
+        positions[ticker] = {
+            "entry_price": price_dollars, "count_fp": count_fp,
+            "side": side_label, "opened_at": datetime.now().isoformat(),
+        }
         save_open_positions(positions)
         return True
     except Exception as e:
@@ -301,7 +310,11 @@ def check_and_close_profitable_positions(client):
         except Exception:
             continue
 
-        current_bid = getattr(market, "yes_bid_dollars", None)
+        side_label = pos.get("side", "YES")  # older positions predate NO-side support, default YES
+        side = Side.YES if side_label == "YES" else Side.NO
+        bid_field = "yes_bid_dollars" if side_label == "YES" else "no_bid_dollars"
+
+        current_bid = getattr(market, bid_field, None)
         if not current_bid:
             continue
 
@@ -310,13 +323,17 @@ def check_and_close_profitable_positions(client):
 
         if gain_pct >= PROFIT_TARGET_PCT:
             try:
+                price_kwargs = (
+                    {"yes_price_dollars": f"{current_bid:.4f}"} if side == Side.YES
+                    else {"no_price_dollars": f"{current_bid:.4f}"}
+                )
                 client.portfolio.place_order(
-                    ticker, Action.SELL, Side.YES,
+                    ticker, Action.SELL, side,
                     count_fp=str(pos["count_fp"]),
-                    yes_price_dollars=f"{current_bid:.4f}",
+                    **price_kwargs,
                 )
                 profit = (current_bid - pos["entry_price"]) * pos["count_fp"]
-                msg = f"{ticker}: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, gain +{gain_pct:.1f}% (${profit:.2f})"
+                msg = f"{ticker} [{side_label}]: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, gain +{gain_pct:.1f}% (${profit:.2f})"
                 send_discord(DISCORD_WEBHOOK_BETS, _POSITION_CLOSED_PREFIX + msg)
                 del positions[ticker]
                 save_open_positions(positions)
@@ -333,8 +350,6 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
 
     edges = find_moneyline_edges(sharpapi_rows)
 
-    # Only trade games starting soon (within NEAR_TERM_HOURS) -- filters
-    # out anything days away.
     NEAR_TERM_HOURS = float(os.getenv("NEAR_TERM_HOURS", "36"))
     now = datetime.now(timezone.utc)
     near_term_edges = []
@@ -371,8 +386,6 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
 
             try:
                 existing_positions = client.portfolio.get_positions()
-                # get_positions() returns a list directly; position_fp != 0
-                # means we currently hold real exposure in that ticker.
                 held_tickers = {
                     p.ticker for p in existing_positions
                     if float(getattr(p, "position_fp", 0) or 0) != 0
@@ -383,25 +396,52 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             except Exception as e:
                 print(f"[safety] could not verify existing positions, skipping trade to be safe: {e}")
                 continue
+
+            # Check BOTH directions: buy YES if this team looks undervalued,
+            # or buy NO ("short" the team) if it looks overvalued. Only one
+            # side can genuinely be an edge for a given team -- check YES
+            # first, fall back to NO only if YES doesn't clear the bar.
             yes_ask = getattr(match, "yes_ask_dollars", None)
-            if not yes_ask:
+            no_ask = getattr(match, "no_ask_dollars", None)
+
+            side_to_trade = None
+            trade_price = None
+            trade_edge_pct = None
+            trade_fair_prob = None
+
+            if yes_ask:
+                yes_price = float(yes_ask)
+                yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
+                if yes_edge_pct >= MIN_EDGE_PCT:
+                    side_to_trade = Side.YES
+                    trade_price = yes_price
+                    trade_edge_pct = yes_edge_pct
+                    trade_fair_prob = edge["fair_prob"]
+
+            if side_to_trade is None and no_ask:
+                no_price = float(no_ask)
+                fair_prob_no = 1 - edge["fair_prob"]
+                no_edge_pct = (fair_prob_no - no_price) * 100
+                if no_edge_pct >= MIN_EDGE_PCT:
+                    side_to_trade = Side.NO
+                    trade_price = no_price
+                    trade_edge_pct = no_edge_pct
+                    trade_fair_prob = fair_prob_no
+
+            if side_to_trade is None:
                 continue
 
-            kalshi_price = float(yes_ask)
-            edge_pct = (edge["fair_prob"] - kalshi_price) * 100
-            if edge_pct < MIN_EDGE_PCT:
-                continue
-
+            side_label = "YES" if side_to_trade == Side.YES else "NO"
             msg = (
-                f"[{league.upper()}] {edge['selection']}\n"
+                f"[{league.upper()}] {edge['selection']} ({side_label})\n"
                 f"Matchup: {edge['away_team']} @ {edge['home_team']}\n"
                 f"Kalshi ticker: {match.ticker}\n"
-                f"Kalshi price: ${kalshi_price:.2f}  Fair: {edge['fair_prob']*100:.1f}%  Edge: +{edge_pct:.2f}%"
+                f"Kalshi price: ${trade_price:.2f}  Fair: {trade_fair_prob*100:.1f}%  Edge: +{trade_edge_pct:.2f}%"
             )
-            count_fp = max(1.0, MAX_STAKE_PER_TRADE / kalshi_price)
+            count_fp = max(1.0, MAX_STAKE_PER_TRADE / trade_price)
             matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
-            if execute_kalshi_buy(client, match.ticker, kalshi_price, count_fp, msg,
-                                   fair_prob=edge['fair_prob'], edge_pct=edge_pct,
+            if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
+                                   fair_prob=trade_fair_prob, edge_pct=trade_edge_pct,
                                    matchup=matchup_str, league=league):
                 seen_trades.add(trade_key)
                 save_seen_trades(seen_trades)
@@ -493,12 +533,12 @@ def start_dashboard_thread():
 
 
 def main():
-    print("--- AR894 Autonomous Worker (real: NFL+NCAAF moneyline | paper: consensus picks + BTC momentum) ---")
+    print("--- AR894 Autonomous Worker (real: NFL+NCAAF moneyline YES/NO | paper: consensus picks + BTC momentum) ---")
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Systems online, sir. I'll only speak up when there's something worth saying.")
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Systems online, sir. Now watching both sides of the market. I'll only speak up when there's something worth saying.")
     while True:
         try:
             run_once(client, seen_trades)
