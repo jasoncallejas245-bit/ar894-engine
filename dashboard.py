@@ -60,6 +60,10 @@ PAGE_TEMPLATE = """
       <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
     </div>
   </div>
+  <form method="POST" action="/reset_allocation" style="margin-top:8px;">
+    <button type="submit">Re-sync allocated to live balance (${{ "%.2f"|format(balance) }})</button>
+  </form>
+  <p class="muted">Use this if a manual trade or an old bug threw the allocated total off from what's actually there.</p>
 
   <h2>Open Positions ({{ positions|length }})</h2>
   {% if positions %}
@@ -187,6 +191,24 @@ def dashboard():
 def allocate():
     amount = float(request.form.get("amount", 0))
     ledger.approve_allocation(amount)
+    return redirect("/")
+
+
+@app.route("/reset_allocation", methods=["POST"])
+def reset_allocation():
+    """Snap total_allocated back to whatever's actually in the account right
+    now -- for correcting drift from manual trading or a past bug, not for
+    normal deposit approval (that's still /allocate)."""
+    client = get_client()
+    try:
+        balance = client.portfolio.get_balance().balance / 100.0
+    except Exception:
+        return redirect("/")
+    led = ledger.load_ledger()
+    led["total_allocated"] = balance
+    led["pending_deposit_amount"] = None
+    led["history"].append({"type": "manual_resync", "amount": balance})
+    ledger.save_ledger(led)
     return redirect("/")
 
 
