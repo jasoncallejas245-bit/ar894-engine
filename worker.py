@@ -361,6 +361,60 @@ def check_and_close_profitable_positions(client):
                 send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"failed to close {ticker}: {e}")
 
 
+def reconcile_settled_positions(client):
+    """
+    Catches real positions that settled (won or lost) since we opened them
+    -- separate from check_and_close_profitable_positions, which only
+    handles taking an early profit. This covers everything else: a losing
+    position, or one held all the way to market settlement.
+
+    Records the result into ledger.record_bot_trade_result, which is
+    scoped to only trades this bot itself placed -- unlike Kalshi's
+    account-wide realized P&L, which also mixes in any manual trading on
+    this account.
+    """
+    positions = load_open_positions()
+    if not positions:
+        return
+
+    try:
+        live_positions = client.portfolio.get_positions()
+        live_tickers = {p.ticker for p in live_positions if float(getattr(p, "position_fp", 0) or 0) != 0}
+    except Exception as e:
+        print(f"[reconcile] could not fetch live positions: {e}")
+        return
+
+    for ticker, pos in list(positions.items()):
+        if ticker in live_tickers:
+            continue  # still open, nothing to reconcile
+
+        try:
+            market = client.get_market(ticker)
+        except Exception as e:
+            print(f"[reconcile] could not fetch market {ticker}: {e}")
+            continue
+
+        result = getattr(market, "result", None)
+        if result not in ("yes", "no"):
+            continue  # not actually settled -- leave it, don't guess
+
+        side_label = pos.get("side", "YES")
+        won = (result == side_label.lower())
+        entry_price = pos["entry_price"]
+        count_fp = pos["count_fp"]
+        pnl = (1.0 - entry_price) * count_fp if won else -entry_price * count_fp
+
+        new_total = ledger.record_bot_trade_result(ticker, pnl, note=f"{side_label} settled {result.upper()}")
+        send_discord(
+            DISCORD_WEBHOOK_UPDATES,
+            f"[SETTLED] {ticker} [{side_label}]: {'WON' if won else 'LOST'} "
+            f"(P&L: ${pnl:+.2f}, bot lifetime P&L: ${new_total:+.2f})"
+        )
+
+        del positions[ticker]
+        save_open_positions(positions)
+
+
 def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
     series_ticker = LEAGUE_SERIES[league]
     kalshi_markets = get_open_markets(client, series_ticker)
@@ -547,6 +601,7 @@ def check_daily_summary():
 
 def run_once(client, seen_trades):
     check_and_close_profitable_positions(client)
+    reconcile_settled_positions(client)
 
     # Real trading + paper tracking for money-risk leagues
     for league in LEAGUE_SERIES.keys():

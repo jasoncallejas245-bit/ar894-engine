@@ -56,7 +56,7 @@ PAGE_TEMPLATE = """
     <div class="row"><span>Total allocated (ever)</span><span>${{ "%.2f"|format(total_allocated) }}</span></div>
     <div class="row"><span>Currently committed</span><span>${{ "%.2f"|format(committed) }}</span></div>
     <div class="row"><span><strong>Available to trade</strong></span><span><strong>${{ "%.2f"|format(available_budget) }}</strong></span></div>
-    <div class="row"><span>Realized profit (not spendable)</span>
+    <div class="row"><span>Bot's realized profit (not spendable)</span>
       <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
     </div>
   </div>
@@ -161,7 +161,9 @@ def dashboard():
     available_budget = ledger.get_available_budget(client, open_positions_dict)
     live_tickers = {p.ticker for p in positions}
     committed = ledger.get_open_position_cost_basis(open_positions_dict, live_tickers)
-    realized_profit = ledger.get_realized_profit_total(client)
+    # Bot's own P&L only -- NOT Kalshi's account-wide realized_pnl, which
+    # also includes any manual trading on this account.
+    realized_profit = ledger.get_bot_realized_profit()
 
     trade_log = load_json("trade_audit_log.json", [])
     summary = pt.get_paper_trade_summary()

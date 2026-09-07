@@ -1,8 +1,10 @@
 import os
 import json
+from datetime import datetime
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 LEDGER_FILE = os.path.join(DATA_DIR, "ledger.json")
+BOT_PNL_FILE = os.path.join(DATA_DIR, "bot_realized_pnl.json")
 
 SPORTS_STAKE_PER_TRADE = float(os.getenv("SPORTS_STAKE_PER_TRADE", "5.00"))
 BTC_STAKE_PER_TRADE = float(os.getenv("BTC_STAKE_PER_TRADE", "2.00"))
@@ -26,6 +28,41 @@ def load_ledger():
 def save_ledger(ledger):
     with open(LEDGER_FILE, "w") as f:
         json.dump(ledger, f, indent=2)
+
+
+def load_bot_pnl():
+    """
+    The bot's OWN realized P&L, tracked separately from Kalshi's
+    account-wide realized_pnl_dollars figure. Necessary because this
+    account also has manual trading on it -- Kalshi has no concept of
+    "which trades came from the bot", so we track it ourselves, scoped
+    to only positions this bot itself opened and closed/settled.
+    Starts at $0 from whenever this tracking was added; it can't
+    retroactively reconstruct P&L from before that, but everything the
+    bot does from here on is recorded accurately and separately from
+    your manual trades.
+    """
+    if os.path.exists(BOT_PNL_FILE):
+        with open(BOT_PNL_FILE) as f:
+            return json.load(f)
+    return {"total": 0.0, "history": []}
+
+
+def save_bot_pnl(data):
+    with open(BOT_PNL_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def record_bot_trade_result(ticker, pnl, note=""):
+    data = load_bot_pnl()
+    data["total"] = round(data["total"] + pnl, 4)
+    data["history"].append({"ticker": ticker, "pnl": pnl, "note": note, "at": datetime.now().isoformat()})
+    save_bot_pnl(data)
+    return data["total"]
+
+
+def get_bot_realized_profit():
+    return load_bot_pnl()["total"]
 
 
 def get_realized_profit_total(client):
@@ -83,12 +120,20 @@ def get_open_position_cost_basis(open_positions_dict, live_position_tickers):
 
 def get_available_budget(client, open_positions_dict):
     """
-    The actual, live-computed amount currently free to trade with:
-    allocated budget (adjusted for realized P&L, since a realized loss
-    shrinks real cash even though total_allocated doesn't change) minus
-    whatever's presently committed to open positions -- then clamped to
-    the live account cash balance so a stale or optimistic ledger can
-    never authorize a stake bigger than what Kalshi actually shows.
+    The actual, live-computed amount currently free to trade with.
+
+    Deliberately does NOT try to net out realized P&L anymore -- this
+    account also has manual trading on it (unrelated markets, much bigger
+    stakes than this bot ever uses), and Kalshi's realized-P&L figure is
+    account-wide, so it was pulling manual trading results into the bot's
+    own budget math. That's not fixable by adjusting the formula; the
+    account-wide number is just the wrong input.
+
+    Instead: the bot may use up to what you've authorized (total_allocated),
+    capped at whatever cash is ACTUALLY in the account right now (so it can
+    never be told to spend money that isn't there, no matter what else has
+    happened on the account), minus whatever it currently has committed to
+    its own open positions.
     """
     ledger = load_ledger()
     try:
@@ -98,16 +143,15 @@ def get_available_budget(client, open_positions_dict):
         live_tickers = set()
 
     committed = get_open_position_cost_basis(open_positions_dict, live_tickers)
-    realized_profit = get_realized_profit_total(client)
-    ledger_budget = ledger["total_allocated"] + realized_profit - committed
 
     try:
         live_cash = client.portfolio.get_balance().balance / 100.0
     except Exception as e:
-        print(f"[ledger] could not fetch live balance, falling back to ledger-only budget: {e}")
-        return max(0.0, ledger_budget)
+        print(f"[ledger] could not fetch live balance, falling back to allocated-only budget: {e}")
+        return max(0.0, ledger["total_allocated"] - committed)
 
-    return max(0.0, min(ledger_budget, live_cash))
+    authorized = min(ledger["total_allocated"], live_cash)
+    return max(0.0, authorized - committed)
 
 
 def check_for_new_deposit(client, send_discord_fn, webhook, dashboard_url):
