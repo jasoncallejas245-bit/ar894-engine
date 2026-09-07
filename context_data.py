@@ -22,6 +22,7 @@ team-name match or a flaky upstream API just means an empty/None result,
 never a crash that takes down the trading loop over this.
 """
 import requests
+from datetime import date, datetime, timezone
 
 ESPN_LEAGUE_PATHS = {
     "nfl": "football/nfl",
@@ -31,10 +32,41 @@ ESPN_LEAGUE_PATHS = {
     # concept on ESPN's team endpoints -- deliberately not included here.
 }
 
+# ESPN's "core" API (a separate product from the "site" API above) is what
+# actually holds injury data -- but it's hypermedia: the team-injuries
+# endpoint returns a season-long list of $ref LINKS, not injury details,
+# and that list mixes in every injury-report EVENT for the season,
+# including ones later resolved back to "Active" (confirmed live: the
+# first entry checked during development had status "Active" -- a
+# depth-chart note, not a current injury). So this has to resolve
+# individual links and filter, not just read the list.
+CORE_SPORT_LEAGUE = {
+    "nfl": ("football", "nfl"),
+    "ncaaf": ("football", "college-football"),
+    "mlb": ("baseball", "mlb"),
+}
+
+# Confirmed live: a resolved/non-injury entry reports status "Active".
+# Anything else (Out, Questionable, Doubtful, Injured Reserve, etc.)
+# is treated as a real, current injury concern.
+_NON_NOTABLE_STATUSES = {"active"}
+
+# Injury-report events older than this are treated as stale noise, not a
+# "current" injury -- a two-week-old "Questionable" tag isn't useful
+# context for tonight's game.
+_INJURY_MAX_AGE_DAYS = 14
+
 _UA = {"User-Agent": "ar894-engine (personal trading bot; contact via GitHub repo)"}
 
 _team_id_cache = {}    # league -> {normalized_name: team_id}
 _venue_cache = {}      # (league, team_id) -> (lat, lon) or (None, None)
+_injury_cache = {}     # (league, team_id) -> {"date": "YYYY-MM-DD", "injuries": [...]}
+
+
+def _fetch_json(url, params=None):
+    resp = requests.get(url, params=params, headers=_UA, timeout=8)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _normalize(name):
@@ -80,32 +112,76 @@ def _find_team_id(league, team_name):
     return None
 
 
-def get_team_injuries(league, team_name, max_items=5):
-    """List of short strings like 'J. Smith (QB) - Out', or [] if none
-    found, team couldn't be matched, or the lookup failed."""
+def get_team_injuries(league, team_name, max_items=5, max_checked=15):
+    """
+    Current, notable injuries for a team -- e.g. an actual "Out" or
+    "Questionable" tag from roughly the last two weeks, not the season's
+    entire injury-report history. Resolves ESPN's core-API hypermedia
+    list one link at a time (status + date), and a second link for the
+    player's name only for entries that pass the status/recency filter --
+    so a fully healthy team costs one list fetch and nothing else, not a
+    guaranteed pile of requests. Cached per (league, team) per calendar
+    day, since injury reports don't meaningfully change every 5 minutes
+    and this would otherwise re-resolve the same links every scan cycle.
+    Returns [] if none found, the team couldn't be matched, or any part
+    of the lookup failed -- never raises.
+    """
     team_id = _find_team_id(league, team_name)
-    path = ESPN_LEAGUE_PATHS.get(league)
-    if not team_id or not path:
-        return []
-    try:
-        resp = requests.get(
-            f"https://site.api.espn.com/apis/site/v2/sports/{path}/teams/{team_id}/injuries",
-            headers=_UA, timeout=8,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"[context_data] injuries fetch failed for {team_name}: {e}")
+    sport_league = CORE_SPORT_LEAGUE.get(league)
+    if not team_id or not sport_league:
         return []
 
-    items = data.get("injuries") or data.get("items") or []
-    out = []
-    for item in items[:max_items]:
-        athlete = (item.get("athlete") or {}).get("displayName") or item.get("displayName") or "?"
-        status = item.get("status") or (item.get("type") or {}).get("description") or "?"
-        position = ((item.get("athlete") or {}).get("position") or {}).get("abbreviation", "")
-        out.append(f"{athlete} ({position}) - {status}".replace("()", "").strip())
-    return out
+    today_str = date.today().isoformat()
+    cache_key = (league, team_id)
+    cached = _injury_cache.get(cache_key)
+    if cached and cached["date"] == today_str:
+        return cached["injuries"][:max_items]
+
+    sport, core_league = sport_league
+    try:
+        listing = _fetch_json(
+            f"https://sports.core.api.espn.com/v2/sports/{sport}/leagues/{core_league}/teams/{team_id}/injuries"
+        )
+    except Exception as e:
+        print(f"[context_data] injuries list fetch failed for {team_name}: {e}")
+        return []
+
+    refs = [item.get("$ref") for item in (listing.get("items") or [])[:max_checked] if item.get("$ref")]
+    cutoff = datetime.now(timezone.utc).timestamp() - _INJURY_MAX_AGE_DAYS * 86400
+
+    notable = []
+    for ref in refs:
+        try:
+            detail = _fetch_json(ref)
+        except Exception:
+            continue
+
+        status = (detail.get("status") or "").strip()
+        if not status or status.lower() in _NON_NOTABLE_STATUSES:
+            continue
+
+        entry_date = detail.get("date")
+        try:
+            entry_ts = datetime.fromisoformat(entry_date.replace("Z", "+00:00")).timestamp() if entry_date else None
+        except Exception:
+            entry_ts = None
+        if entry_ts is not None and entry_ts < cutoff:
+            continue  # stale -- an old report, not a current concern
+
+        athlete_name = "?"
+        athlete_ref = (detail.get("athlete") or {}).get("$ref")
+        if athlete_ref:
+            try:
+                athlete_name = _fetch_json(athlete_ref).get("displayName", "?")
+            except Exception:
+                pass
+
+        notable.append(f"{athlete_name} - {status}")
+        if len(notable) >= max_items:
+            break
+
+    _injury_cache[cache_key] = {"date": today_str, "injuries": notable}
+    return notable
 
 
 def get_venue_latlon(league, home_team):
