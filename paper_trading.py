@@ -73,7 +73,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         best_row_a = list(rows_a.values())[0]
         away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
 
-        match_map = safe_match_fn(kalshi_events, away_team, home_team)
+        match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp', 'wta'}))
         if not match_map:
             continue
 

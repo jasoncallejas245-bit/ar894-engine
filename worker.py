@@ -41,13 +41,19 @@ LAST_SUMMARY_FILE = _os.path.join(DATA_DIR, "last_summary.json")
 LEAGUE_SERIES = {
     "nfl": "KXNFLGAME",
     "ncaaf": "KXNCAAFGAME",
+    "mlb": "KXMLBGAME",
+    "ufc": "KXUFCFIGHT",
+    "atp": "KXATPMATCH",
+    # "wta": "KXWTAMATCH",  # dropped: SharpAPI/Kalshi cover different WTA
+    # tournament tiers right now, zero overlap -- revisit later if that changes
 }
 
-# Paper-trading-only leagues: gathers real evidence, zero real-money risk.
-# NOT included in process_league_real_trading -- only used for paper picks.
-PAPER_ONLY_LEAGUES = {
-    "mlb": "KXMLBGAME",
-}
+# Sports where Kalshi's short title is an individual's SURNAME, not a full
+# team name -- these need surname matching instead of exact-full-name
+# matching (which is correct for team sports but would match nobody here).
+INDIVIDUAL_ATHLETE_LEAGUES = {"ufc", "atp"}
+
+PAPER_ONLY_LEAGUES = {}
 
 _EDGE_FOUND_PREFIX = "I've found something, sir. "
 _TRADE_EXECUTED_PREFIX = "Done. Order placed: "
@@ -220,24 +226,35 @@ def short_name(kalshi_title):
     return (kalshi_title or "").replace(" wins", "").strip()
 
 
-def safe_match_event(kalshi_events, away_team, home_team):
+def surname(full_name):
+    """Last word of a full name, normalized -- e.g. 'Alexandre Pantoja' -> 'PANTOJA'."""
+    parts = (full_name or "").strip().split()
+    return parts[-1].upper() if parts else ""
+
+
+def safe_match_event(kalshi_events, away_team, home_team, individual=False):
     """
-    Matches on EXACT normalized name equality only. If a school name is a
-    prefix of another real school's name (Texas / Texas State, Miami / Miami
-    OH, etc.), containment matching can silently pair the wrong real-world
-    game -- exact match means we simply skip the trade instead of guessing.
+    Matches on EXACT normalized equality only -- team name for team sports,
+    surname for individual-athlete sports. Never substring/containment,
+    which can silently pair the wrong real-world game or person. If nothing
+    matches exactly, we skip the trade instead of guessing.
     """
-    away_norm, home_norm = normalize_team_name(away_team), normalize_team_name(home_team)
+    if individual:
+        away_key, home_key = surname(away_team), surname(home_team)
+        get_key = lambda title: surname(short_name(title))
+    else:
+        away_key, home_key = normalize_team_name(away_team), normalize_team_name(home_team)
+        get_key = lambda title: normalize_team_name(short_name(title))
 
     for event_ticker, markets in kalshi_events.items():
         if len(markets) != 2:
             continue
         m1, m2 = markets
-        s1_norm, s2_norm = normalize_team_name(short_name(m1.title)), normalize_team_name(short_name(m2.title))
+        s1_key, s2_key = get_key(m1.title), get_key(m2.title)
 
-        if s1_norm == away_norm and s2_norm == home_norm:
+        if s1_key == away_key and s2_key == home_key:
             return {away_team: m1, home_team: m2}
-        if s1_norm == home_norm and s2_norm == away_norm:
+        if s1_key == home_key and s2_key == away_key:
             return {home_team: m1, away_team: m2}
 
     return None
@@ -378,7 +395,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
 
     for event_id, event_edges in edges_by_event.items():
         away_team, home_team = event_edges[0]["away_team"], event_edges[0]["home_team"]
-        match_map = safe_match_event(kalshi_events, away_team, home_team)
+        match_map = safe_match_event(kalshi_events, away_team, home_team, individual=(league in INDIVIDUAL_ATHLETE_LEAGUES))
         if not match_map:
             continue
 
