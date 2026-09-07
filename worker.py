@@ -43,6 +43,12 @@ LEAGUE_SERIES = {
     "ncaaf": "KXNCAAFGAME",
 }
 
+# Paper-trading-only leagues: gathers real evidence, zero real-money risk.
+# NOT included in process_league_real_trading -- only used for paper picks.
+PAPER_ONLY_LEAGUES = {
+    "mlb": "KXMLBGAME",
+}
+
 _EDGE_FOUND_PREFIX = "I've found something, sir. "
 _TRADE_EXECUTED_PREFIX = "Done. Order placed: "
 _POSITION_CLOSED_PREFIX = "Took the profit while it was there. "
@@ -487,6 +493,7 @@ def check_daily_summary():
 def run_once(client, seen_trades):
     check_and_close_profitable_positions(client)
 
+    # Real trading + paper tracking for money-risk leagues
     for league in LEAGUE_SERIES.keys():
         try:
             print(f"[{league}] fetching odds...")
@@ -499,6 +506,19 @@ def run_once(client, seen_trades):
             pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
+
+    # Paper-only leagues -- same tested logic, zero real-money risk
+    for league, series_ticker in PAPER_ONLY_LEAGUES.items():
+        try:
+            print(f"[{league}] (paper only) fetching odds...")
+            rows = fetch_sharpapi_odds(league)
+            print(f"[{league}] got {len(rows)} odds rows")
+
+            kalshi_markets = get_open_markets(client, series_ticker)
+            kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
+            pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
+        except Exception as e:
+            send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] paper scan error: {e}")
 
     try:
         print("[btc] checking momentum...")
