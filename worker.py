@@ -441,7 +441,8 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
 
     edges = find_moneyline_edges(sharpapi_rows)
 
-    NEAR_TERM_HOURS = float(os.getenv("NEAR_TERM_HOURS", "36"))
+    # Same-day only -- the event must start later today (UTC), not just within some
+    # rolling hour window that could roll into tomorrow.
     now = datetime.now(timezone.utc)
     near_term_edges = []
     for e in edges:
@@ -453,7 +454,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
         except Exception:
             continue
         hours_until = (start_dt - now).total_seconds() / 3600
-        if 0 <= hours_until <= NEAR_TERM_HOURS:
+        if hours_until >= 0 and start_dt.date() == now.date():
             near_term_edges.append(e)
 
     edges = near_term_edges
@@ -575,7 +576,7 @@ def process_btc_real_trading(client):
         return
     ask_price = float(ask)
     available = ledger.get_available_budget(client, load_open_positions())
-    stake_dollars = max(available * ledger.STAKE_PERCENT, ledger.STAKE_MIN_DOLLARS)
+    stake_dollars = max(available, ledger.STAKE_MIN_DOLLARS)  # BTC may use the full available budget
     count_fp = max(1.0, stake_dollars / ask_price)
 
     msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"

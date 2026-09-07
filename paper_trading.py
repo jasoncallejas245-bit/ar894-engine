@@ -128,11 +128,9 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         best_row_a = list(rows_a.values())[0]
         away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
 
-        # Only paper-pick games starting soon, same window real trading uses
-        # (NEAR_TERM_HOURS, default 36h) -- otherwise picks pile up for games
-        # weeks out that can't resolve for a long time, which is what was
-        # happening before this filter existed.
-        near_term_hours = float(os.getenv("NEAR_TERM_HOURS", "36"))
+        # Same-day only -- mirrors real trading: the event must start later today
+        # (UTC), not just within some rolling hour window that could roll into
+        # tomorrow. Otherwise picks pile up for games that can't resolve soon.
         start_str = best_row_a.get("event_start_time")
         if not start_str:
             continue
@@ -140,8 +138,9 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
         except Exception:
             continue
-        hours_until = (start_dt - datetime.now(timezone.utc)).total_seconds() / 3600
-        if not (0 <= hours_until <= near_term_hours):
+        now = datetime.now(timezone.utc)
+        hours_until = (start_dt - now).total_seconds() / 3600
+        if not (hours_until >= 0 and start_dt.date() == now.date()):
             continue
 
         match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp'}))  # matches worker.py's INDIVIDUAL_ATHLETE_LEAGUES
