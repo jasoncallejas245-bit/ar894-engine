@@ -159,7 +159,8 @@ def dashboard():
     led = ledger.load_ledger()
     open_positions_dict = load_json("open_positions.json", {})
     available_budget = ledger.get_available_budget(client, open_positions_dict)
-    committed = led["total_allocated"] - available_budget
+    live_tickers = {p.ticker for p in positions}
+    committed = ledger.get_open_position_cost_basis(open_positions_dict, live_tickers)
     realized_profit = ledger.get_realized_profit_total(client)
 
     trade_log = load_json("trade_audit_log.json", [])
