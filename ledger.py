@@ -6,8 +6,12 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 LEDGER_FILE = os.path.join(DATA_DIR, "ledger.json")
 BOT_PNL_FILE = os.path.join(DATA_DIR, "bot_realized_pnl.json")
 
-SPORTS_STAKE_PER_TRADE = float(os.getenv("SPORTS_STAKE_PER_TRADE", "5.00"))
-BTC_STAKE_PER_TRADE = float(os.getenv("BTC_STAKE_PER_TRADE", "2.00"))
+# Every trade -- sports or BTC -- stakes a PERCENTAGE of available budget,
+# not a fixed dollar amount, so it automatically scales with account size
+# (e.g. 25% of a $15 available budget = $3.75, 25% of $20 = $5), instead of
+# staying stuck at one number regardless of what's actually available.
+STAKE_PERCENT = float(os.getenv("STAKE_PERCENT", "0.25"))
+STAKE_MIN_DOLLARS = float(os.getenv("STAKE_MIN_DOLLARS", "1.00"))
 
 # How much extra account equity beyond (allocated + realized profit) has to
 # show up before we treat it as a genuine new deposit, not rounding noise.

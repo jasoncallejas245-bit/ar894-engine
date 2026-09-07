@@ -529,7 +529,9 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 f"Kalshi ticker: {match.ticker}\n"
                 f"Kalshi price: ${trade_price:.2f}  Fair: {trade_fair_prob*100:.1f}%  Edge: +{trade_edge_pct:.2f}%"
             )
-            count_fp = max(1.0, ledger.SPORTS_STAKE_PER_TRADE / trade_price)
+            available = ledger.get_available_budget(client, load_open_positions())
+            stake_dollars = max(available * ledger.STAKE_PERCENT, ledger.STAKE_MIN_DOLLARS)
+            count_fp = max(1.0, stake_dollars / trade_price)
             matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
             if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
                                    fair_prob=trade_fair_prob, edge_pct=trade_edge_pct,
@@ -572,7 +574,9 @@ def process_btc_real_trading(client):
     if not ask:
         return
     ask_price = float(ask)
-    count_fp = max(1.0, ledger.BTC_STAKE_PER_TRADE / ask_price)
+    available = ledger.get_available_budget(client, load_open_positions())
+    stake_dollars = max(available * ledger.STAKE_PERCENT, ledger.STAKE_MIN_DOLLARS)
+    count_fp = max(1.0, stake_dollars / ask_price)
 
     msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
     if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title,
