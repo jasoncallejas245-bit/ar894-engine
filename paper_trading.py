@@ -24,7 +24,13 @@ def save_paper_trades(data):
 # ---------------------------------------------------------------------------
 # Moneyline paper trading
 # ---------------------------------------------------------------------------
-def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook):
+def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0):
+    """
+    Mirrors the REAL trading edge-detection logic exactly (checks both YES
+    and NO for a genuine mispricing edge, skips the game entirely if
+    neither side clears the bar) -- so paper trading actually validates
+    the same method used for real money, just extended to more sports.
+    """
     from collections import defaultdict as dd
 
     grouped = dd(dict)
@@ -64,30 +70,54 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             continue
 
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
-        picked_selection, picked_prob = (sel_a, fair_a) if fair_a > fair_b else (sel_b, fair_b)
-        best_row = list((rows_a if picked_selection == sel_a else rows_b).values())[0]
-        away_team, home_team = best_row.get("away_team"), best_row.get("home_team")
+        best_row_a = list(rows_a.values())[0]
+        away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
 
-        # Find the matching Kalshi ticker and its real current price -- this is
-        # what makes P&L tracking possible, not just win/loss.
         match_map = safe_match_fn(kalshi_events, away_team, home_team)
-        kalshi_ticker, entry_price = None, None
-        if match_map:
-            match = match_map.get(picked_selection)
-            if match:
-                kalshi_ticker = match.ticker
-                yes_ask = getattr(match, "yes_ask_dollars", None)
-                entry_price = float(yes_ask) if yes_ask else None
+        if not match_map:
+            continue
+
+        fair_probs = {sel_a: fair_a, sel_b: fair_b}
+
+        # Check BOTH selections for a genuine YES-side edge, same as real
+        # trading. NO-side edges surface naturally too, since if team A's
+        # fair prob is well below the market's YES price, that's really a
+        # NO-side edge on team A (equivalent to a YES edge on team B).
+        best_pick = None
+        for selection in (sel_a, sel_b):
+            match = match_map.get(selection)
+            if not match:
+                continue
+            yes_ask = getattr(match, "yes_ask_dollars", None)
+            if not yes_ask:
+                continue
+            yes_price = float(yes_ask)
+            fair_prob = fair_probs[selection]
+            edge_pct = (fair_prob - yes_price) * 100
+
+            if edge_pct >= min_edge_pct:
+                candidate = {
+                    "picked_team": selection, "side": "YES",
+                    "market_probability": fair_prob, "entry_price": yes_price,
+                    "edge_pct": edge_pct, "kalshi_ticker": match.ticker,
+                }
+                if best_pick is None or edge_pct > best_pick["edge_pct"]:
+                    best_pick = candidate
+
+        if best_pick is None:
+            continue  # no genuine edge on either side -- skip, don't force a pick
 
         pick = {
             "league": league.upper(),
             "event_id": event_id,
             "away_team": away_team,
             "home_team": home_team,
-            "picked_team": picked_selection,
-            "market_probability": picked_prob,
-            "kalshi_ticker": kalshi_ticker,
-            "entry_price": entry_price,
+            "picked_team": best_pick["picked_team"],
+            "side": best_pick["side"],
+            "market_probability": best_pick["market_probability"],
+            "edge_pct": best_pick["edge_pct"],
+            "kalshi_ticker": best_pick["kalshi_ticker"],
+            "entry_price": best_pick["entry_price"],
             "picked_at": datetime.now().isoformat(),
             "status": "pending",
         }
@@ -96,14 +126,13 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
 
     if new_picks:
         save_paper_trades(paper_data)
-        lines = [f"[PAPER TRADES - {league.upper()}] {len(new_picks)} new picks this cycle:\n"]
+        lines = [f"[PAPER TRADES - {league.upper()}] {len(new_picks)} genuine-edge picks this cycle:\n"]
         for p in new_picks:
-            price_note = f"${p['entry_price']:.2f}" if p["entry_price"] else "price N/A"
             lines.append(
-                f"- {p['picked_team']} ({p['away_team']} @ {p['home_team']}) "
-                f"| consensus {p['market_probability']*100:.1f}% | Kalshi {price_note}"
+                f"- {p['picked_team']} [{p['side']}] ({p['away_team']} @ {p['home_team']}) "
+                f"| fair {p['market_probability']*100:.1f}% | Kalshi ${p['entry_price']:.2f} | edge +{p['edge_pct']:.1f}%"
             )
-        lines.append("\n(No real money -- tracking for accuracy and hypothetical P&L)")
+        lines.append("\n(No real money -- tracking the same edge method used for real trading)")
         send_discord_fn(webhook, "\n".join(lines))
 
     return new_picks
