@@ -49,13 +49,22 @@ _POSITION_CLOSED_PREFIX = "Took the profit while it was there. "
 _ERROR_PREFIX = "Small hiccup, sir — nothing to worry about, but you should know: "
 
 
-def send_discord(webhook_url, message):
-    try:
-        resp = requests.post(webhook_url, json={"content": message}, timeout=5)
-        if resp.status_code != 204:
+def send_discord(webhook_url, message, _retries=3):
+    for attempt in range(_retries):
+        try:
+            resp = requests.post(webhook_url, json={"content": message}, timeout=5)
+            if resp.status_code == 204:
+                return
+            if resp.status_code == 429:
+                retry_after = resp.json().get("retry_after", 1)
+                time.sleep(retry_after + 0.1)
+                continue
             print(f"[discord] non-204: {resp.status_code} {resp.text[:200]}")
-    except Exception as e:
-        print(f"[discord] send failed: {e}")
+            return
+        except Exception as e:
+            print(f"[discord] send failed: {e}")
+            return
+    print(f"[discord] gave up after {_retries} rate-limit retries")
 
 
 def load_daily_state():

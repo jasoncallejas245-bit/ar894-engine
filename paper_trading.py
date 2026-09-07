@@ -96,16 +96,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
 
     if new_picks:
         save_paper_trades(paper_data)
+        lines = [f"[PAPER TRADES - {league.upper()}] {len(new_picks)} new picks this cycle:\n"]
         for p in new_picks:
-            price_note = f"${p['entry_price']:.2f}" if p["entry_price"] else "price unavailable yet"
-            msg = (
-                f"[PAPER TRADE - {p['league']}] Picked {p['picked_team']}\n"
-                f"Matchup: {p['away_team']} @ {p['home_team']}\n"
-                f"Market consensus probability: {p['market_probability']*100:.1f}%\n"
-                f"Kalshi entry price: {price_note}\n"
-                f"(No real money -- tracking for accuracy and hypothetical P&L)"
+            price_note = f"${p['entry_price']:.2f}" if p["entry_price"] else "price N/A"
+            lines.append(
+                f"- {p['picked_team']} ({p['away_team']} @ {p['home_team']}) "
+                f"| consensus {p['market_probability']*100:.1f}% | Kalshi {price_note}"
             )
-            send_discord_fn(webhook, msg)
+        lines.append("\n(No real money -- tracking for accuracy and hypothetical P&L)")
+        send_discord_fn(webhook, "\n".join(lines))
 
     return new_picks
 
