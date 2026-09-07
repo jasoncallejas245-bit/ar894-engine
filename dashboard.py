@@ -403,6 +403,44 @@ def purge_stale_moneyline_picks_route():
     return f"Kept {kept} near-term picks, removed {removed} stale ones.\n"
 
 
+@app.route("/purge_pre_threshold_picks", methods=["GET", "POST"])
+def purge_pre_threshold_picks_route():
+    """
+    One-time cleanup for a specific, now-understood bug: before commit
+    7dde8e9 (2026-09-07) added the `fair_prob >= favorite_min_prob` check,
+    make_moneyline_paper_picks only required a 2% edge -- no floor on how
+    likely the picked side actually was to win. That let it pick underdogs
+    (confirmed live: two ATP picks sitting at ~39-40% win probability,
+    nowhere near the 55% bar this bot is supposed to enforce).
+
+    This removes only PENDING picks whose stored market_probability is
+    below the CURRENT effective favorite_min_prob -- i.e. picks that could
+    never have been made under today's actual rules. Resolved (won/lost)
+    picks are always left alone; this doesn't touch real trading history,
+    only cleans up paper-trading clutter from before the bug was fixed.
+    GET-accessible (not just POST) since it's safe to call more than once
+    and safe to trigger from a browser address bar.
+    """
+    import paper_trading as pt
+    threshold = pt.get_effective_favorite_min_prob()
+    data = pt.load_paper_trades()
+    kept, removed = [], []
+    for pick in data["moneyline"]:
+        if pick.get("status") == "pending" and pick.get("market_probability", 1.0) < threshold:
+            removed.append(pick)
+        else:
+            kept.append(pick)
+    data["moneyline"] = kept
+    if removed:
+        pt.save_paper_trades(data)
+    return {
+        "current_threshold": threshold,
+        "kept_count": len(kept),
+        "removed_count": len(removed),
+        "removed_picks": removed,
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
