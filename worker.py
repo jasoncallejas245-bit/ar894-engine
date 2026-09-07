@@ -158,16 +158,32 @@ def remove_vig_two_way(prob_a, prob_b):
     return prob_a / total, prob_b / total
 
 
+# SharpAPI's response is a flat list of (event, selection, sportsbook) rows,
+# not one row per game -- a single busy day easily produces many rows per
+# game (2 selections x N sportsbooks). 200 was an arbitrary guess with no
+# pagination handling, so a day with more games than that would be silently
+# truncated -- no error, just missing games with nothing in the logs to show
+# it. Raised the ceiling and, more importantly, added a loud log line when
+# the response comes back exactly at the requested limit, since that's the
+# actual signal of truncation (the API gave us precisely as much as we asked
+# for, meaning there could easily be more we didn't see).
+SHARPAPI_FETCH_LIMIT = 1000
+
+
 def fetch_sharpapi_odds(league):
     resp = requests.get(
         SHARPAPI_BASE,
-        params={"league": league, "market": "main", "limit": 200},
+        params={"league": league, "market": "main", "limit": SHARPAPI_FETCH_LIMIT},
         headers={"X-API-Key": SHARPAPI_KEY},
     )
     if resp.status_code != 200:
         print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
         return []
-    return resp.json().get("data", [])
+    data = resp.json().get("data", [])
+    if len(data) >= SHARPAPI_FETCH_LIMIT:
+        print(f"[sharpapi] WARNING: {league} returned exactly the {SHARPAPI_FETCH_LIMIT}-row limit -- "
+              f"there may be MORE games this isn't seeing. Consider raising SHARPAPI_FETCH_LIMIT or adding pagination.")
+    return data
 
 
 def find_moneyline_edges(rows):
@@ -694,7 +710,8 @@ def run_once(client, seen_trades, run_sports_scan=True):
         try:
             print(f"[{league}] fetching odds...")
             rows = fetch_sharpapi_odds(league)
-            print(f"[{league}] got {len(rows)} odds rows")
+            distinct_games = len({r.get("event_id") for r in rows if r.get("event_id")})
+            print(f"[{league}] got {len(rows)} odds rows across {distinct_games} distinct games")
 
             if league in REAL_TRADING_LEAGUES:
                 process_league_real_trading(client, league, seen_trades, rows)
