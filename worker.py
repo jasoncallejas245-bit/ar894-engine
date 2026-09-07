@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import random
 import tempfile
 from datetime import datetime, date
@@ -11,6 +10,7 @@ from pykalshi import KalshiClient, Action, Side, MarketStatus
 
 import paper_trading as pt
 import ledger
+from state_io import atomic_write_json, safe_read_json
 
 if os.getenv("KALSHI_PRIVATE_KEY_CONTENT"):
     _key_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
@@ -116,41 +116,30 @@ def send_discord(webhook_url, message, _retries=3):
 
 def load_daily_state():
     today = date.today().isoformat()
-    if os.path.exists(DAILY_STATE_FILE):
-        with open(DAILY_STATE_FILE) as f:
-            state = json.load(f)
-        if state.get("date") == today:
-            return state
+    state = safe_read_json(DAILY_STATE_FILE, None)
+    if state and state.get("date") == today:
+        return state
     return {"date": today, "realized_loss": 0.0, "trades_executed": 0, "halted": False}
 
 
 def save_daily_state(state):
-    with open(DAILY_STATE_FILE, "w") as f:
-        json.dump(state, f)
+    atomic_write_json(DAILY_STATE_FILE, state)
 
 
 def load_seen_trades():
-    if os.path.exists(SEEN_TRADES_FILE):
-        with open(SEEN_TRADES_FILE) as f:
-            return set(json.load(f))
-    return set()
+    return set(safe_read_json(SEEN_TRADES_FILE, []))
 
 
 def save_seen_trades(seen):
-    with open(SEEN_TRADES_FILE, "w") as f:
-        json.dump(list(seen), f)
+    atomic_write_json(SEEN_TRADES_FILE, list(seen))
 
 
 def load_open_positions():
-    if os.path.exists(OPEN_POSITIONS_FILE):
-        with open(OPEN_POSITIONS_FILE) as f:
-            return json.load(f)
-    return {}
+    return safe_read_json(OPEN_POSITIONS_FILE, {})
 
 
 def save_open_positions(positions):
-    with open(OPEN_POSITIONS_FILE, "w") as f:
-        json.dump(positions, f)
+    atomic_write_json(OPEN_POSITIONS_FILE, positions)
 
 
 def remove_vig_two_way(prob_a, prob_b):
@@ -301,13 +290,9 @@ def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, mat
         "event_start_time": event_start_time,  # when the game itself was/is, not when we decided
         "decided_at": datetime.now().isoformat(),
     }
-    log = []
-    if os.path.exists(TRADE_AUDIT_LOG):
-        with open(TRADE_AUDIT_LOG) as f:
-            log = json.load(f)
+    log = safe_read_json(TRADE_AUDIT_LOG, [])
     log.append(entry)
-    with open(TRADE_AUDIT_LOG, "w") as f:
-        json.dump(log, f, indent=2)
+    atomic_write_json(TRADE_AUDIT_LOG, log)
 
 
 # Kalshi charges a taker fee on top of the raw stake, and on a cheap/thin
@@ -604,9 +589,10 @@ def process_btc_real_trading(client):
     if price is None:
         return
     history = pt.load_btc_price_history()
-    if len(history) < 3:
+    window = pt.get_effective_btc_momentum_window()  # same learned window paper trading uses
+    if len(history) < window:
         return
-    momentum = history[-1]["price"] - history[-3]["price"]
+    momentum = history[-1]["price"] - history[-window]["price"]
     direction = "up" if momentum > 0 else "down"
 
     try:
@@ -642,10 +628,7 @@ def process_btc_real_trading(client):
 
 def check_daily_summary():
     today = date.today().isoformat()
-    last = {}
-    if os.path.exists(LAST_SUMMARY_FILE):
-        with open(LAST_SUMMARY_FILE) as f:
-            last = json.load(f)
+    last = safe_read_json(LAST_SUMMARY_FILE, {})
 
     if last.get("date") == today:
         return
@@ -673,8 +656,7 @@ def check_daily_summary():
             lines.append("\nNothing showing genuine hypothetical profit yet — recommend continuing to paper trade.")
 
     send_discord(DISCORD_WEBHOOK_UPDATES, "\n".join(lines))
-    with open(LAST_SUMMARY_FILE, "w") as f:
-        json.dump({"date": today}, f)
+    atomic_write_json(LAST_SUMMARY_FILE, {"date": today})
 
 
 def run_once(client, seen_trades, run_sports_scan=True):

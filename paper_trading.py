@@ -1,9 +1,11 @@
 import os
-import json
+import statistics
 import requests
 from datetime import datetime, timezone
 
 import os as _os
+from state_io import atomic_write_json, safe_read_json
+
 DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = _os.path.join(DATA_DIR, "paper_trades.json")
 BTC_PRICE_HISTORY_FILE = _os.path.join(DATA_DIR, "btc_price_history.json")
@@ -23,18 +25,14 @@ PAPER_STARTING_BANKROLL = float(_os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
 
 
 def load_paper_bankroll():
-    if os.path.exists(PAPER_BANKROLL_FILE):
-        with open(PAPER_BANKROLL_FILE) as f:
-            return json.load(f)
-    return {
+    return safe_read_json(PAPER_BANKROLL_FILE, {
         "moneyline": {"balance": PAPER_STARTING_BANKROLL, "history": []},
         "btc": {"balance": PAPER_STARTING_BANKROLL, "history": []},
-    }
+    })
 
 
 def save_paper_bankroll(data):
-    with open(PAPER_BANKROLL_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(PAPER_BANKROLL_FILE, data)
 
 
 def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
@@ -58,15 +56,34 @@ def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
 
 
 def load_paper_trades():
-    if os.path.exists(PAPER_TRADES_FILE):
-        with open(PAPER_TRADES_FILE) as f:
-            return json.load(f)
-    return {"moneyline": [], "btc": []}
+    return safe_read_json(PAPER_TRADES_FILE, {"moneyline": [], "btc": []})
 
 
 def save_paper_trades(data):
-    with open(PAPER_TRADES_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(PAPER_TRADES_FILE, data)
+
+
+# ---------------------------------------------------------------------------
+# Shared significance helper -- so "the numbers moved the wrong way" doesn't
+# get treated as "we learned something" on a handful of noisy outcomes.
+# ---------------------------------------------------------------------------
+def _mean_is_significantly_negative(values, z=2.0):
+    """
+    True only if the sample mean is negative by more than `z` standard
+    errors -- i.e. even after giving the sample the benefit of the doubt
+    for noise, it still looks like a real loss. z=2.0 is roughly a 97.5%
+    one-sided confidence bar (not just "further from zero than 1 SE",
+    which turned out to false-positive on pure-noise test data -- 3
+    candidate windows being compared at once makes an unlucky one easy to
+    hit by chance, so this needs a real margin, not a token one). This
+    still isn't a peer-reviewed stats pipeline, but it should not fire on
+    "the raw total happened to be negative today."
+    """
+    if len(values) < 2:
+        return False
+    mean = statistics.mean(values)
+    stderr = statistics.stdev(values) / (len(values) ** 0.5)
+    return (mean + z * stderr) < 0
 
 
 # ---------------------------------------------------------------------------
@@ -337,16 +354,25 @@ def get_btc_spot_price():
 
 
 def load_btc_price_history():
-    if os.path.exists(BTC_PRICE_HISTORY_FILE):
-        with open(BTC_PRICE_HISTORY_FILE) as f:
-            return json.load(f)
-    return []
+    return safe_read_json(BTC_PRICE_HISTORY_FILE, [])
 
 
 def save_btc_price_history(history):
     history = history[-20:]
-    with open(BTC_PRICE_HISTORY_FILE, "w") as f:
-        json.dump(history, f)
+    atomic_write_json(BTC_PRICE_HISTORY_FILE, history, indent=None)
+
+
+# Windows this actually tries when "learning" a better momentum lookback.
+# Kept small and simple on purpose -- this is meant to be a real, checkable
+# improvement over a hardcoded number, not a hyperparameter search.
+BTC_MOMENTUM_WINDOW_CANDIDATES = (2, 3, 5)
+BTC_MOMENTUM_WINDOW_DEFAULT = 3
+
+
+def get_effective_btc_momentum_window():
+    """The currently-learned BTC momentum lookback (see
+    maybe_adjust_btc_momentum_window for how/when this changes)."""
+    return load_adaptive_settings().get("btc_momentum_window", BTC_MOMENTUM_WINDOW_DEFAULT)
 
 
 def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
@@ -358,10 +384,11 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     history.append({"price": price, "at": datetime.now().isoformat()})
     save_btc_price_history(history)
 
-    if len(history) < 3:
+    window = get_effective_btc_momentum_window()
+    if len(history) < window:
         return None
 
-    momentum = history[-1]["price"] - history[-3]["price"]
+    momentum = history[-1]["price"] - history[-window]["price"]
     direction = "up" if momentum > 0 else "down"
 
     try:
@@ -388,12 +415,22 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     elif direction == "down" and no_ask:
         entry_price = float(no_ask)
 
+    # Snapshot enough recent prices to retroactively test EVERY candidate
+    # window later (max window is 5, so keep 6: one more than needed, as a
+    # margin) -- this is what makes maybe_adjust_btc_momentum_window able to
+    # actually compare windows against real outcomes instead of just logging
+    # a number nothing reads back.
+    max_window = max(BTC_MOMENTUM_WINDOW_CANDIDATES)
+    price_snapshot = [h["price"] for h in history[-(max_window + 1):]]
+
     pick = {
         "ticker": market.ticker,
         "title": market.title,
         "predicted_direction": direction,
         "btc_price_at_pick": price,
         "momentum_signal": momentum,
+        "momentum_window_used": window,
+        "price_snapshot": price_snapshot,
         "entry_price": entry_price,
         "picked_at": datetime.now().isoformat(),
         "status": "pending",
@@ -409,7 +446,7 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
         msg = (
             f"[PAPER TRADE - BTC 15min] Predicting: {direction.upper()}\n"
             f"Market: {market.title}\n"
-            f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f})\n"
+            f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f}, window: {window})\n"
             f"Entry price: {price_note}\n"
             f"(No real money -- experimental signal, tracking for accuracy and P&L)"
         )
@@ -436,6 +473,7 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
         actual_direction = "up" if result == "yes" else "down"
         won = (actual_direction == pick["predicted_direction"])
         pick["status"] = "won" if won else "lost"
+        pick["actual_direction"] = actual_direction  # needed to retroactively score other windows
         pick["resolved_at"] = datetime.now().isoformat()
 
         if pick.get("entry_price"):
@@ -488,9 +526,10 @@ def get_paper_trade_summary():
 
 
 # ---------------------------------------------------------------------------
-# Gated self-adjustment: only kicks in once there's a real sample size.
-# Below the threshold, this does nothing -- adjusting on a tiny sample would
-# just be tuning to noise, not learning anything real.
+# Gated self-adjustment: only kicks in once there's a real sample size AND
+# the effect clears the significance check above. Below the threshold, or
+# below significance, this does nothing -- adjusting on a tiny or noisy
+# sample would just be tuning to noise, not learning anything real.
 # ---------------------------------------------------------------------------
 MIN_SAMPLE_FOR_ADJUSTMENT = 30
 
@@ -503,15 +542,11 @@ CLOSE_GAME_BAND = 0.05
 
 
 def load_adaptive_settings():
-    if _os.path.exists(ADAPTIVE_SETTINGS_FILE):
-        with open(ADAPTIVE_SETTINGS_FILE) as f:
-            return json.load(f)
-    return {}
+    return safe_read_json(ADAPTIVE_SETTINGS_FILE, {})
 
 
 def save_adaptive_settings(settings):
-    with open(ADAPTIVE_SETTINGS_FILE, "w") as f:
-        json.dump(settings, f, indent=2)
+    atomic_write_json(ADAPTIVE_SETTINGS_FILE, settings)
 
 
 def get_effective_favorite_min_prob():
@@ -526,27 +561,105 @@ def get_effective_favorite_min_prob():
 
 def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
     """
-    If there's enough resolved BTC history, checks whether a different
-    momentum lookback window (2, 3, or 5 readings) would have performed
-    better historically, and adjusts BTC_MOMENTUM_WINDOW accordingly.
-    Below MIN_SAMPLE_FOR_ADJUSTMENT resolved trades, this is a no-op.
+    The REAL version of this function -- previously it only logged a win
+    rate and wrote a "btc_momentum_window" number that nothing ever read
+    back, so BTC always traded on a hardcoded 3-reading window no matter
+    what this said. Now it actually does what its name claims:
+
+    For every resolved BTC pick, its `price_snapshot` (saved at pick time)
+    lets us retroactively ask "what would each candidate window (2, 3, 5)
+    have predicted here?" and check that against the real outcome
+    (`actual_direction`). That gives a genuine win rate per window, over
+    the SAME set of real outcomes -- not a hypothetical.
+
+    Only switches away from the current window if a candidate has both:
+      (a) a real sample of its own (>= MIN_SAMPLE_FOR_ADJUSTMENT scoreable
+          picks), and
+      (b) a win rate significantly better than the current window's, using
+          the same not-just-noise check as the moneyline threshold.
+    Never switches on a tie or a marginal, could-be-noise difference.
     """
     paper_data = load_paper_trades()
-    resolved = [t for t in paper_data["btc"] if t["status"] in ("won", "lost")]
-
-    if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
-        return None  # not enough data yet -- do nothing
-
-    wins = sum(1 for t in resolved if t["status"] == "won")
-    win_rate = wins / len(resolved)
+    resolved = [
+        t for t in paper_data["btc"]
+        if t["status"] in ("won", "lost") and t.get("price_snapshot") and t.get("actual_direction")
+    ]
 
     settings = load_adaptive_settings()
-    settings["btc_momentum_window"] = settings.get("btc_momentum_window", 3)
-    settings["btc_sample_size"] = len(resolved)
-    settings["btc_win_rate"] = win_rate
-    settings["last_adjusted"] = datetime.now().isoformat()
-    save_adaptive_settings(settings)
+    current_window = settings.get("btc_momentum_window", BTC_MOMENTUM_WINDOW_DEFAULT)
 
+    if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
+        settings["btc_momentum_window"] = current_window
+        settings["btc_sample_size"] = len(resolved)
+        save_adaptive_settings(settings)
+        return None  # not enough scoreable history yet -- do nothing
+
+    def outcomes_for_window(w):
+        """1.0 per pick where this window would have called it right, else 0.0 -- skips picks whose snapshot isn't long enough for this window."""
+        out = []
+        for t in resolved:
+            snap = t["price_snapshot"]
+            if len(snap) <= w:
+                continue
+            momentum = snap[-1] - snap[-1 - w]
+            predicted = "up" if momentum > 0 else "down"
+            out.append(1.0 if predicted == t["actual_direction"] else 0.0)
+        return out
+
+    per_window = {w: outcomes_for_window(w) for w in BTC_MOMENTUM_WINDOW_CANDIDATES}
+    current_outcomes = per_window.get(current_window, outcomes_for_window(current_window))
+
+    settings["btc_sample_size"] = len(resolved)
+    settings["btc_win_rate"] = statistics.mean(current_outcomes) if current_outcomes else None
+    settings["btc_window_win_rates"] = {
+        str(w): (round(statistics.mean(o), 4) if o else None) for w, o in per_window.items()
+    }
+
+    best_window, best_outcomes = current_window, current_outcomes
+    for w, outcomes in per_window.items():
+        if w == current_window or len(outcomes) < MIN_SAMPLE_FOR_ADJUSTMENT:
+            continue
+        if not current_outcomes:
+            continue
+        # "candidate beats current" as a paired difference: candidate_win - current_win
+        # per matched pick where both windows could score it, so this compares
+        # like-for-like rather than two differently-sized samples in isolation.
+        diffs = []
+        for t in resolved:
+            snap = t["price_snapshot"]
+            if len(snap) <= w or len(snap) <= current_window:
+                continue
+            cand_pred = "up" if (snap[-1] - snap[-1 - w]) > 0 else "down"
+            cur_pred = "up" if (snap[-1] - snap[-1 - current_window]) > 0 else "down"
+            cand_hit = 1.0 if cand_pred == t["actual_direction"] else 0.0
+            cur_hit = 1.0 if cur_pred == t["actual_direction"] else 0.0
+            diffs.append(cand_hit - cur_hit)
+
+        if len(diffs) >= MIN_SAMPLE_FOR_ADJUSTMENT and statistics.mean(diffs) > 0:
+            # Reuse the same "beats noise" check, just on the improvement margin
+            # instead of a P&L total -- true only if the candidate's edge over
+            # the current window survives giving it the benefit of the doubt.
+            neg_diffs = [-d for d in diffs]
+            if _mean_is_significantly_negative(neg_diffs, z=2.0):
+                best_window, best_outcomes = w, outcomes
+
+    if best_window != current_window:
+        settings["btc_momentum_window"] = best_window
+        settings["last_adjusted"] = datetime.now().isoformat()
+        save_adaptive_settings(settings)
+        if send_discord_fn and webhook:
+            old_rate = statistics.mean(current_outcomes) * 100 if current_outcomes else 0
+            new_rate = statistics.mean(best_outcomes) * 100 if best_outcomes else 0
+            send_discord_fn(
+                webhook,
+                f"[LEARNING] BTC momentum window {current_window}->{best_window}: "
+                f"{old_rate:.0f}% -> {new_rate:.0f}% win rate over {len(resolved)} resolved picks, "
+                f"a large enough edge to trust. Switching."
+            )
+        return settings
+
+    settings["btc_momentum_window"] = current_window
+    save_adaptive_settings(settings)
     return settings
 
 
@@ -556,13 +669,14 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
     sample, checks whether picks sitting just above the current favorite
     bar (the "close" bucket -- too close to call, even though they cleared
     FAVORITE_MIN_PROB) are actually losing money, separately from clearer
-    favorites further above the bar. If the close bucket has its own
-    real sample size and a negative hypothetical P&L, raises the bar so
+    favorites further above the bar. If the close bucket has its own real
+    sample size AND a hypothetical P&L that's negative by more than noise
+    could explain (see _mean_is_significantly_negative), raises the bar so
     future picks skip that zone -- this is how it "notices" a favorite
-    wasn't safe enough. Only ever tightens the bar, never loosens it on
-    its own (loosening on noise is exactly the kind of mistake this is
-    meant to avoid). Below MIN_SAMPLE_FOR_ADJUSTMENT resolved picks total,
-    or below it for the close bucket specifically, this is a no-op.
+    wasn't safe enough. Only ever tightens the bar, never loosens it on its
+    own (loosening on noise is exactly the kind of mistake this is meant to
+    avoid). Below MIN_SAMPLE_FOR_ADJUSTMENT resolved picks total, or below
+    it for the close bucket specifically, this is a no-op.
     """
     paper_data = load_paper_trades()
     resolved = [
@@ -588,12 +702,13 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
         settings["moneyline_clear_bucket_win_rate"] = sum(1 for t in clear_bucket if t["status"] == "won") / len(clear_bucket)
 
     if len(close_bucket) >= MIN_SAMPLE_FOR_ADJUSTMENT:
-        close_pnl = round(sum(t["hypothetical_pnl"] for t in close_bucket), 4)
+        close_pnls = [t["hypothetical_pnl"] for t in close_bucket]
+        close_pnl = round(sum(close_pnls), 4)
         close_win_rate = sum(1 for t in close_bucket if t["status"] == "won") / len(close_bucket)
         settings["moneyline_close_bucket_pnl"] = close_pnl
         settings["moneyline_close_bucket_win_rate"] = close_win_rate
 
-        if close_pnl < 0 and close_band_top > current_bar:
+        if close_band_top > current_bar and _mean_is_significantly_negative(close_pnls, z=2.0):
             settings["moneyline_favorite_min_prob"] = close_band_top
             settings["last_adjusted"] = datetime.now().isoformat()
             save_adaptive_settings(settings)
@@ -602,7 +717,7 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
                     webhook,
                     f"[LEARNING] Favorites in the {current_bar*100:.0f}-{close_band_top*100:.0f}% fair-odds range "
                     f"went {close_win_rate*100:.0f}% win rate (${close_pnl:+.2f} over {len(close_bucket)} picks) -- "
-                    f"too close to trust. Raising the favorite bar to {close_band_top*100:.0f}% for future picks."
+                    f"a large enough loss to trust, not just a bad run. Raising the favorite bar to {close_band_top*100:.0f}%."
                 )
             return settings
 

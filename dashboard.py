@@ -1,9 +1,9 @@
 import os
-import json
 from flask import Flask, render_template_string, request, redirect
 from pykalshi import KalshiClient
 
 import ledger
+from state_io import safe_read_json
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 
@@ -141,8 +141,13 @@ PAGE_TEMPLATE = """
       </span>
     </div>
     {% endif %}
-    <div class="row"><span>BTC momentum window</span><span>{{ adaptive.btc_momentum_window or 3 }} readings</span></div>
+    <div class="row"><span>BTC momentum window</span><span>{{ adaptive.btc_momentum_window or 3 }} readings ({{ "%.0f"|format((adaptive.btc_win_rate or 0)*100) }}% win)</span></div>
     <div class="row"><span>BTC resolved sample</span><span>{{ adaptive.btc_sample_size or 0 }} / {{ min_sample }} needed</span></div>
+    {% if adaptive.btc_window_win_rates %}
+    <div class="row"><span class="muted">Window win rates tested</span>
+      <span class="muted">{% for w, rate in adaptive.btc_window_win_rates.items() %}{{ w }}:{{ "%.0f"|format((rate or 0)*100) }}%{% if not loop.last %}, {% endif %}{% endfor %}</span>
+    </div>
+    {% endif %}
     {% if adaptive.last_adjusted %}
     <div class="row"><span class="muted">Last adjusted</span><span class="muted">{{ adaptive.last_adjusted }}</span></div>
     {% endif %}
@@ -155,11 +160,7 @@ PAGE_TEMPLATE = """
 
 
 def load_json(filename, default):
-    path = os.path.join(DATA_DIR, filename)
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return default
+    return safe_read_json(os.path.join(DATA_DIR, filename), default)
 
 
 def get_client():

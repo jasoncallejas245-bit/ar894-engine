@@ -1,6 +1,7 @@
 import os
-import json
 from datetime import datetime
+
+from state_io import atomic_write_json, safe_read_json
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 LEDGER_FILE = os.path.join(DATA_DIR, "ledger.json")
@@ -19,19 +20,15 @@ DEPOSIT_DETECTION_THRESHOLD = 0.50
 
 
 def load_ledger():
-    if os.path.exists(LEDGER_FILE):
-        with open(LEDGER_FILE) as f:
-            return json.load(f)
-    return {
+    return safe_read_json(LEDGER_FILE, {
         "total_allocated": 0.0,
         "pending_deposit_amount": None,
         "history": [],  # list of {type, amount, at} for deposits/allocations
-    }
+    })
 
 
 def save_ledger(ledger):
-    with open(LEDGER_FILE, "w") as f:
-        json.dump(ledger, f, indent=2)
+    atomic_write_json(LEDGER_FILE, ledger)
 
 
 def load_bot_pnl():
@@ -46,15 +43,11 @@ def load_bot_pnl():
     bot does from here on is recorded accurately and separately from
     your manual trades.
     """
-    if os.path.exists(BOT_PNL_FILE):
-        with open(BOT_PNL_FILE) as f:
-            return json.load(f)
-    return {"total": 0.0, "history": []}
+    return safe_read_json(BOT_PNL_FILE, {"total": 0.0, "history": []})
 
 
 def save_bot_pnl(data):
-    with open(BOT_PNL_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(BOT_PNL_FILE, data)
 
 
 def record_bot_trade_result(ticker, pnl, note=""):
