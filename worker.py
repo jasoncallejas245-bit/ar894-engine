@@ -27,6 +27,12 @@ DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
+# Only bet on the side that's actually favored to win (its own fair win
+# probability must clear this bar), not just wherever a thin statistical
+# edge happens to point -- betting AGAINST a favorite for a small edge is
+# a coinflip-ish, higher-variance play even when the math is sound. This
+# keeps trades to backing favorites, which is more conservative.
+FAVORITE_MIN_PROB = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 # Sports (SharpAPI) scanning stays on its own slower cadence -- games move
 # on a much longer clock than BTC's 15-minute windows, and SharpAPI calls
@@ -525,7 +531,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             if yes_ask:
                 yes_price = float(yes_ask)
                 yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
-                if yes_edge_pct >= MIN_EDGE_PCT:
+                if yes_edge_pct >= MIN_EDGE_PCT and edge["fair_prob"] >= FAVORITE_MIN_PROB:
                     side_to_trade = Side.YES
                     trade_price = yes_price
                     trade_edge_pct = yes_edge_pct
@@ -535,7 +541,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 no_price = float(no_ask)
                 fair_prob_no = 1 - edge["fair_prob"]
                 no_edge_pct = (fair_prob_no - no_price) * 100
-                if no_edge_pct >= MIN_EDGE_PCT:
+                if no_edge_pct >= MIN_EDGE_PCT and fair_prob_no >= FAVORITE_MIN_PROB:
                     side_to_trade = Side.NO
                     trade_price = no_price
                     trade_edge_pct = no_edge_pct
