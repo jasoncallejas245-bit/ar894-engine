@@ -185,10 +185,20 @@ def get_team_injuries(league, team_name, max_items=5, max_checked=15):
 
 
 def get_venue_latlon(league, home_team):
-    """Home team's venue coordinates via ESPN's team endpoint, used as a
-    proxy for the game venue (correct for the large majority of games --
-    wrong only for a genuine neutral-site game, which this doesn't try to
-    detect). Returns (None, None) if unavailable."""
+    """
+    Home team's venue coordinates, used as a proxy for the game venue
+    (correct for the large majority of games -- wrong only for a genuine
+    neutral-site game, which this doesn't try to detect).
+
+    Confirmed live during development: ESPN's team endpoint does NOT
+    return latitude/longitude directly (an earlier version of this
+    function assumed a `venue.grid` field that doesn't exist and always
+    returned None). What it DOES return is a street address --
+    `team.franchise.venue.address` with city/state/zipCode -- so this
+    geocodes that zip code via Zippopotam.us (free, no API key, confirmed
+    working) to get real coordinates. Returns (None, None) if the team
+    can't be matched or any step fails.
+    """
     team_id = _find_team_id(league, home_team)
     path = ESPN_LEAGUE_PATHS.get(league)
     if not team_id or not path:
@@ -196,18 +206,19 @@ def get_venue_latlon(league, home_team):
     cache_key = (league, team_id)
     if cache_key in _venue_cache:
         return _venue_cache[cache_key]
+
     result = (None, None)
     try:
-        resp = requests.get(
-            f"https://site.api.espn.com/apis/site/v2/sports/{path}/teams/{team_id}",
-            headers=_UA, timeout=8,
-        )
-        resp.raise_for_status()
-        venue = resp.json().get("team", {}).get("venue", {})
-        grid = venue.get("grid") or {}
-        lat, lon = grid.get("latitude"), grid.get("longitude")
-        if lat is not None and lon is not None:
-            result = (lat, lon)
+        team_data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/teams/{team_id}")
+        address = team_data.get("team", {}).get("franchise", {}).get("venue", {}).get("address", {})
+        zip_code = address.get("zipCode")
+        country = (address.get("country") or "USA").upper()
+        if zip_code and country in ("USA", "US"):
+            geo = _fetch_json(f"https://api.zippopotam.us/us/{zip_code}")
+            place = (geo.get("places") or [{}])[0]
+            lat, lon = place.get("latitude"), place.get("longitude")
+            if lat is not None and lon is not None:
+                result = (float(lat), float(lon))
     except Exception as e:
         print(f"[context_data] venue lookup failed for {home_team}: {e}")
     _venue_cache[cache_key] = result
