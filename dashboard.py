@@ -60,11 +60,6 @@ PAGE_TEMPLATE = """
       <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
     </div>
   </div>
-  <form method="POST" action="/reset_allocation" style="margin-top:8px;">
-    <button type="submit">Re-sync allocated to live balance (${{ "%.2f"|format(balance) }})</button>
-  </form>
-  <p class="muted">Use this if a manual trade or an old bug threw the allocated total off from what's actually there.</p>
-
   <h2>Open Positions ({{ positions|length }})</h2>
   {% if positions %}
     {% for p in positions %}
@@ -198,7 +193,9 @@ def allocate():
 def reset_allocation():
     """Snap total_allocated back to whatever's actually in the account right
     now -- for correcting drift from manual trading or a past bug, not for
-    normal deposit approval (that's still /allocate)."""
+    normal deposit approval (that's still /allocate). No dashboard button
+    for this anymore (shouldn't be needed day-to-day) -- available via
+    curl/Postman as a manual escape hatch if numbers ever drift again."""
     client = get_client()
     try:
         balance = client.portfolio.get_balance().balance / 100.0
@@ -210,6 +207,18 @@ def reset_allocation():
     led["history"].append({"type": "manual_resync", "amount": balance})
     ledger.save_ledger(led)
     return redirect("/")
+
+
+@app.route("/purge_stale_moneyline_picks", methods=["POST"])
+def purge_stale_moneyline_picks_route():
+    """One-time cleanup for moneyline paper picks made before the
+    near-term filter existed. No dashboard button -- trigger with:
+    curl -X POST https://<your-app>.up.railway.app/purge_stale_moneyline_picks
+    """
+    import paper_trading as pt
+    client = get_client()
+    kept, removed = pt.purge_stale_moneyline_picks(client)
+    return f"Kept {kept} near-term picks, removed {removed} stale ones.\n"
 
 
 if __name__ == "__main__":

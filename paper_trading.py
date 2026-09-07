@@ -24,6 +24,61 @@ def save_paper_trades(data):
 # ---------------------------------------------------------------------------
 # Moneyline paper trading
 # ---------------------------------------------------------------------------
+def purge_stale_moneyline_picks(client, near_term_hours=None):
+    """
+    One-time cleanup: removes PENDING moneyline paper picks whose game is
+    no longer near-term (or whose market can't even be found anymore).
+    These were picked before the near-term filter existed, so they were
+    piling up for games days/weeks out that were never going to resolve
+    soon. Won/lost picks are always kept -- this only clears out picks
+    that were never going to give us a useful signal anytime soon.
+    Returns (kept_count, removed_count).
+    """
+    if near_term_hours is None:
+        near_term_hours = float(os.getenv("NEAR_TERM_HOURS", "36")) * 2  # a bit lenient
+
+    from datetime import timezone as _tz
+    paper_data = load_paper_trades()
+    kept, removed = [], 0
+
+    for pick in paper_data["moneyline"]:
+        if pick["status"] != "pending":
+            kept.append(pick)
+            continue
+
+        ticker = pick.get("kalshi_ticker")
+        if not ticker:
+            removed += 1
+            continue
+
+        try:
+            market = client.get_market(ticker)
+        except Exception:
+            removed += 1
+            continue
+
+        close_time = getattr(market, "close_time", None)
+        if not close_time:
+            removed += 1
+            continue
+
+        try:
+            close_dt = datetime.fromisoformat(str(close_time).replace("Z", "+00:00"))
+        except Exception:
+            removed += 1
+            continue
+
+        hours_until = (close_dt - datetime.now(_tz.utc)).total_seconds() / 3600
+        if 0 <= hours_until <= near_term_hours:
+            kept.append(pick)
+        else:
+            removed += 1
+
+    paper_data["moneyline"] = kept
+    save_paper_trades(paper_data)
+    return len(kept), removed
+
+
 def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
