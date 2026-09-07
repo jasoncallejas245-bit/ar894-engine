@@ -473,6 +473,11 @@ def run_once(client, seen_trades):
     except Exception as e:
         print(f"[summary] error: {e}")
 
+    try:
+        pt.maybe_adjust_btc_momentum_window(send_discord, DISCORD_WEBHOOK_UPDATES)
+    except Exception as e:
+        print(f"[adjust] error: {e}")
+
 
 def main():
     print("--- AR894 Autonomous Worker (real: NFL+NCAAF moneyline | paper: consensus picks + BTC momentum) ---")

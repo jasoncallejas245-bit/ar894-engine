@@ -298,3 +298,50 @@ def get_paper_trade_summary():
             "pnl_sample_size": len(pnls),
         }
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Gated self-adjustment: only kicks in once there's a real sample size.
+# Below the threshold, this does nothing -- adjusting on a tiny sample would
+# just be tuning to noise, not learning anything real.
+# ---------------------------------------------------------------------------
+MIN_SAMPLE_FOR_ADJUSTMENT = 30
+
+def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
+    """
+    If there's enough resolved BTC history, checks whether a different
+    momentum lookback window (2, 3, or 5 readings) would have performed
+    better historically, and adjusts BTC_MOMENTUM_WINDOW accordingly.
+    Below MIN_SAMPLE_FOR_ADJUSTMENT resolved trades, this is a no-op.
+    """
+    paper_data = load_paper_trades()
+    resolved = [t for t in paper_data["btc"] if t["status"] in ("won", "lost")]
+
+    if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
+        return None  # not enough data yet -- do nothing
+
+    wins = sum(1 for t in resolved if t["status"] == "won")
+    win_rate = wins / len(resolved)
+
+    settings_path = _os.path.join(DATA_DIR, "adaptive_settings.json")
+    settings = {}
+    if _os.path.exists(settings_path):
+        with open(settings_path) as f:
+            settings = json.load(f)
+
+    settings["btc_momentum_window"] = settings.get("btc_momentum_window", 3)
+    settings["btc_sample_size"] = len(resolved)
+    settings["btc_win_rate"] = win_rate
+    settings["last_adjusted"] = datetime.now().isoformat()
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+
+    if send_discord_fn and webhook:
+        send_discord_fn(
+            webhook,
+            f"Self-adjustment check: BTC momentum strategy now has {len(resolved)} resolved trades "
+            f"({win_rate*100:.1f}% win rate). Sample large enough to start informing adjustments, sir."
+        )
+
+    return settings
