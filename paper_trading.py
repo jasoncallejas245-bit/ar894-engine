@@ -388,11 +388,45 @@ def save_btc_price_history(history):
 BTC_MOMENTUM_WINDOW_CANDIDATES = (2, 3, 5)
 BTC_MOMENTUM_WINDOW_DEFAULT = 3
 
+# Confirmed live: over 75 resolved bets the strategy hit a 61.3% win rate
+# and was STILL down $32.84 overall -- winning most of its bets while
+# losing money means the PRICE it pays matters just as much as which
+# direction it guesses, and the original version never checked that at
+# all (it bought whichever side momentum favored at whatever price the
+# market offered). This is the fix: only take a bet when the price
+# leaves real room for profit given how often this strategy is actually
+# right, not just whenever momentum points somewhere.
+BTC_MIN_EDGE_PCT = float(os.getenv("BTC_MIN_EDGE_PCT", "3.0"))
+
 
 def get_effective_btc_momentum_window():
     """The currently-learned BTC momentum lookback (see
     maybe_adjust_btc_momentum_window for how/when this changes)."""
     return load_adaptive_settings().get("btc_momentum_window", BTC_MOMENTUM_WINDOW_DEFAULT)
+
+
+def get_btc_fair_prob_estimate():
+    """
+    Best available stand-in for "how likely is this strategy actually
+    right" -- used to gate BTC trades on price, not just direction. This
+    doesn't have a real calibrated probability model (that would need
+    predicting the SIZE of the move, not just its direction), so it uses
+    the live, resolved win rate of the CURRENTLY active window as the
+    estimate. That's not perfect -- it doesn't split UP vs DOWN, which
+    could have different true odds -- but it's real data, honestly
+    describes what this strategy has actually done, and directly targets
+    the exact failure mode confirmed above.
+
+    Returns None before there's enough resolved history to trust it (the
+    same MIN_SAMPLE_FOR_ADJUSTMENT bar the window-learning itself uses)
+    -- during that bootstrap window BTC still trades on direction alone,
+    same as before this fix, so early data collection isn't blocked by a
+    number that isn't trustworthy yet.
+    """
+    settings = load_adaptive_settings()
+    if settings.get("btc_sample_size", 0) < MIN_SAMPLE_FOR_ADJUSTMENT:
+        return None
+    return settings.get("btc_win_rate")
 
 
 def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
@@ -434,6 +468,16 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
         entry_price = float(yes_ask)
     elif direction == "down" and no_ask:
         entry_price = float(no_ask)
+
+    # Price-discipline gate (see get_btc_fair_prob_estimate) -- skip a
+    # pick where the price doesn't leave enough room for profit given
+    # this strategy's real track record, instead of taking every signal
+    # regardless of what it costs.
+    fair_prob_estimate = get_btc_fair_prob_estimate()
+    if fair_prob_estimate is not None and entry_price is not None:
+        edge_pct = (fair_prob_estimate - entry_price) * 100
+        if edge_pct < BTC_MIN_EDGE_PCT:
+            return None
 
     # Snapshot enough recent prices to retroactively test EVERY candidate
     # window later (max window is 5, so keep 6: one more than needed, as a

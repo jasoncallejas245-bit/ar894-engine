@@ -90,11 +90,13 @@ PAGE_TEMPLATE = """
         <span class="label">How often it's right</span>
         <span>{% if c.summary.resolved > 0 %}{{ "%.0f"|format(c.summary.win_rate) }}% correct (out of {{ c.summary.resolved }} finished bets){% else %}no finished bets yet{% endif %}</span>
       </div>
+      {% for s in c.settings %}
       <div class="row">
-        <span class="label">{{ c.setting_label }}</span>
-        <span>{{ c.setting_value }}</span>
+        <span class="label">{{ s.label }}</span>
+        <span>{{ s.value }}</span>
       </div>
-      <div class="sub">↑ {{ c.setting_explanation }}</div>
+      <div class="sub">↑ {{ s.explanation }}</div>
+      {% endfor %}
 
       <div class="row" style="margin-top:12px;">
         <span class="label">Data collected</span>
@@ -233,16 +235,29 @@ def dashboard():
 
     btc_window = adaptive.get("btc_momentum_window", pt.BTC_MOMENTUM_WINDOW_DEFAULT)
 
+    btc_fair_prob = pt.get_btc_fair_prob_estimate()
+    btc_edge_note = (
+        f"Only bets when it estimates at least a {pt.BTC_MIN_EDGE_PCT:.0f}% real edge over the price -- "
+        f"added because it was winning most bets but still losing money paying prices that didn't leave "
+        f"enough room for profit."
+        if btc_fair_prob is not None else
+        f"Will start requiring a {pt.BTC_MIN_EDGE_PCT:.0f}% edge once it has {min_sample} finished bets to judge from -- still gathering data for now."
+    )
+
     categories = [
         {
-            "key": "moneyline", "label": "Sports Moneyline (NFL/NCAAF/MLB/UFC/ATP)",
+            "key": "moneyline", "label": "Sports Moneyline (NFL/NCAAF/MLB/UFC/ATP/WNBA)",
             "summary": summary["moneyline"],
             "bankroll_balance": ml_bank["balance"],
             "bankroll_down": ml_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - ml_bank["balance"]),
-            "setting_label": "How sure it must be to bet",
-            "setting_value": favorite_note,
-            "setting_explanation": "It only bets on a team if it thinks they're at least this likely to win. Higher = more cautious, fewer bets.",
+            "settings": [
+                {
+                    "label": "How sure it must be to bet",
+                    "value": favorite_note,
+                    "explanation": "It only bets on a team if it thinks they're at least this likely to win. Higher = more cautious, fewer bets.",
+                },
+            ],
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
         },
         {
@@ -251,9 +266,18 @@ def dashboard():
             "bankroll_balance": btc_bank["balance"],
             "bankroll_down": btc_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - btc_bank["balance"]),
-            "setting_label": "How far back it looks",
-            "setting_value": f"last {btc_window} price checks",
-            "setting_explanation": "It guesses UP or DOWN based on which way the price has moved over this many recent checks.",
+            "settings": [
+                {
+                    "label": "How far back it looks",
+                    "value": f"last {btc_window} price checks",
+                    "explanation": "It guesses UP or DOWN based on which way the price has moved over this many recent checks.",
+                },
+                {
+                    "label": "Minimum edge required",
+                    "value": f"{pt.BTC_MIN_EDGE_PCT:.0f}%" + (f" (est. {btc_fair_prob*100:.0f}% accurate)" if btc_fair_prob is not None else ""),
+                    "explanation": btc_edge_note,
+                },
+            ],
             "sample": min(adaptive.get("btc_sample_size", 0), min_sample),
         },
     ]

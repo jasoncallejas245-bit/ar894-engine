@@ -65,6 +65,17 @@ LEAGUE_SERIES = {
     "mlb": "KXMLBGAME",
     "ufc": "KXUFCFIGHT",
     "atp": "KXATPMATCH",
+    # Added while WNBA is still in season (regular season/playoffs run into
+    # October) -- confirmed SharpAPI carries "wnba" as a basketball league,
+    # and confirmed Kalshi has WNBA game markets. The exact series ticker
+    # here (KXWNBAGAME) follows every other team sport's confirmed pattern
+    # in this dict (KX{LEAGUE}GAME) but wasn't independently verified live
+    # against Kalshi's API before deploying -- if it's wrong, get_open_markets
+    # just returns zero markets and this league silently produces no picks
+    # (same safe-fail behavior as a real team-name mismatch), so check the
+    # Railway logs after deploy for "[wnba] fetching odds..." followed by a
+    # nonzero markets count to confirm it's actually finding real markets.
+    "wnba": "KXWNBAGAME",
     # "wta": "KXWTAMATCH",  # dropped: SharpAPI/Kalshi cover different WTA
     # tournament tiers right now, zero overlap -- revisit later if that changes
 }
@@ -613,6 +624,18 @@ def process_btc_real_trading(client):
     if not ask:
         return
     ask_price = float(ask)
+
+    # Same price-discipline gate paper trading uses (see
+    # paper_trading.get_btc_fair_prob_estimate) -- confirmed live this
+    # strategy can win most of its bets and still lose money if it pays
+    # whatever price is offered, so real trading needs this check too,
+    # not just the paper simulation.
+    fair_prob_estimate = pt.get_btc_fair_prob_estimate()
+    if fair_prob_estimate is not None:
+        edge_pct = (fair_prob_estimate - ask_price) * 100
+        if edge_pct < pt.BTC_MIN_EDGE_PCT:
+            return
+
     available = ledger.get_available_budget(client, load_open_positions())
     stake_dollars = compute_stake_dollars(available)  # BTC may use the full available budget
     count_fp = max(1.0, stake_dollars / ask_price)
