@@ -84,7 +84,11 @@ def get_open_position_cost_basis(open_positions_dict, live_position_tickers):
 def get_available_budget(client, open_positions_dict):
     """
     The actual, live-computed amount currently free to trade with:
-    allocated budget minus whatever's presently committed to open positions.
+    allocated budget (adjusted for realized P&L, since a realized loss
+    shrinks real cash even though total_allocated doesn't change) minus
+    whatever's presently committed to open positions -- then clamped to
+    the live account cash balance so a stale or optimistic ledger can
+    never authorize a stake bigger than what Kalshi actually shows.
     """
     ledger = load_ledger()
     try:
@@ -94,7 +98,16 @@ def get_available_budget(client, open_positions_dict):
         live_tickers = set()
 
     committed = get_open_position_cost_basis(open_positions_dict, live_tickers)
-    return ledger["total_allocated"] - committed
+    realized_profit = get_realized_profit_total(client)
+    ledger_budget = ledger["total_allocated"] + realized_profit - committed
+
+    try:
+        live_cash = client.portfolio.get_balance().balance / 100.0
+    except Exception as e:
+        print(f"[ledger] could not fetch live balance, falling back to ledger-only budget: {e}")
+        return max(0.0, ledger_budget)
+
+    return max(0.0, min(ledger_budget, live_cash))
 
 
 def check_for_new_deposit(client, send_discord_fn, webhook, dashboard_url):
