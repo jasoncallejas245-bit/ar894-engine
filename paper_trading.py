@@ -432,22 +432,12 @@ def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
         with open(settings_path) as f:
             settings = json.load(f)
 
-    already_announced = settings.get("threshold_announced", False)
-
     settings["btc_momentum_window"] = settings.get("btc_momentum_window", 3)
     settings["btc_sample_size"] = len(resolved)
     settings["btc_win_rate"] = win_rate
     settings["last_adjusted"] = datetime.now().isoformat()
-    settings["threshold_announced"] = True
 
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
-
-    if send_discord_fn and webhook and not already_announced:
-        send_discord_fn(
-            webhook,
-            f"Self-adjustment check: BTC momentum strategy now has {len(resolved)} resolved trades "
-            f"({win_rate*100:.1f}% win rate). Sample large enough to start informing adjustments, sir."
-        )
 
     return settings

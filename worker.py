@@ -322,8 +322,6 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, sid
     if fair_prob is not None:
         log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side_label)
 
-    send_discord(DISCORD_WEBHOOK_BETS, _EDGE_FOUND_PREFIX + discord_msg + f"\nStake: ${stake:.2f}")
-
     try:
         price_kwargs = (
             {"yes_price_dollars": f"{price_dollars:.4f}"} if side == Side.YES
@@ -690,11 +688,6 @@ def run_btc_and_resolution(client):
         print(f"[ledger] deposit check error: {e}")
 
     try:
-        check_daily_summary()
-    except Exception as e:
-        print(f"[summary] error: {e}")
-
-    try:
         pt.maybe_adjust_btc_momentum_window(send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
         print(f"[adjust] error: {e}")
@@ -718,6 +711,8 @@ def main():
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
+
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Updated and back online, sir.")
 
     last_sports_scan = 0.0
     while True:
