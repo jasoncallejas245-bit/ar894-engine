@@ -337,17 +337,18 @@ def check_daily_summary():
             lines.append(f"{category.upper()}: {stats['total_picks']} picks made, none resolved yet.")
             continue
         any_resolved = True
+        pnl_str = f"${stats['total_hypothetical_pnl']:+.2f} over {stats['pnl_sample_size']} priced picks" if stats["total_hypothetical_pnl"] is not None else "no price data captured"
         lines.append(
             f"{category.upper()}: {stats['wins']}/{stats['resolved']} correct "
-            f"({stats['win_rate']:.1f}%) across {stats['total_picks']} total picks."
+            f"({stats['win_rate']:.1f}%), hypothetical P&L: {pnl_str}."
         )
 
     if any_resolved:
-        best = max(summary.items(), key=lambda kv: kv[1]["win_rate"] or 0)
-        if best[1]["resolved"] >= 15 and (best[1]["win_rate"] or 0) > 55:
-            lines.append(f"\n{best[0].upper()} is showing a real enough sample to consider going live. Your call, sir.")
+        profitable = [c for c, s in summary.items() if s["resolved"] >= 15 and (s["total_hypothetical_pnl"] or -999) > 0]
+        if profitable:
+            lines.append(f"\n{', '.join(profitable).upper()} showing real hypothetical profit over a real sample. Worth considering going live, sir.")
         else:
-            lines.append("\nStill too early to recommend real money on either — need a bigger sample.")
+            lines.append("\nNothing showing genuine hypothetical profit yet — recommend continuing to paper trade.")
 
     send_discord(DISCORD_WEBHOOK_UPDATES, "\n".join(lines))
     with open(LAST_SUMMARY_FILE, "w") as f:
@@ -366,14 +367,15 @@ def run_once(client, seen_trades):
 
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
-            pt.make_moneyline_paper_picks(league, rows, kalshi_events, send_discord, DISCORD_WEBHOOK_UPDATES)
+            pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
     try:
         print("[btc] checking momentum...")
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
-        pt.resolve_btc_paper_trades(client)
+        pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC paper trading error: {e}")
 
