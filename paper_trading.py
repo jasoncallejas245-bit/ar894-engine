@@ -3,8 +3,10 @@ import json
 import requests
 from datetime import datetime
 
-PAPER_TRADES_FILE = "paper_trades.json"
-BTC_PRICE_HISTORY_FILE = "btc_price_history.json"
+import os as _os
+DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
+PAPER_TRADES_FILE = _os.path.join(DATA_DIR, "paper_trades.json")
+BTC_PRICE_HISTORY_FILE = _os.path.join(DATA_DIR, "btc_price_history.json")
 
 
 def load_paper_trades():

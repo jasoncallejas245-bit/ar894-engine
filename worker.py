@@ -31,10 +31,12 @@ MIN_EDGE_PCT = 2.0
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
-DAILY_STATE_FILE = "daily_trading_state.json"
-SEEN_TRADES_FILE = "seen_trades.json"
-OPEN_POSITIONS_FILE = "open_positions.json"
-LAST_SUMMARY_FILE = "last_summary.json"
+import os as _os
+DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
+DAILY_STATE_FILE = _os.path.join(DATA_DIR, "daily_trading_state.json")
+SEEN_TRADES_FILE = _os.path.join(DATA_DIR, "seen_trades.json")
+OPEN_POSITIONS_FILE = _os.path.join(DATA_DIR, "open_positions.json")
+LAST_SUMMARY_FILE = _os.path.join(DATA_DIR, "last_summary.json")
 
 LEAGUE_SERIES = {
     "nfl": "KXNFLGAME",
@@ -226,7 +228,7 @@ def safe_match_event(kalshi_events, away_team, home_team):
     return None
 
 
-TRADE_AUDIT_LOG = "trade_audit_log.json"
+TRADE_AUDIT_LOG = _os.path.join(DATA_DIR, "trade_audit_log.json")
 
 def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league):
     entry = {
@@ -356,6 +358,21 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 continue
             match = match_map.get(edge["selection"])
             if not match:
+                continue
+
+            try:
+                existing_positions = client.portfolio.get_positions()
+                # get_positions() returns a list directly; position_fp != 0
+                # means we currently hold real exposure in that ticker.
+                held_tickers = {
+                    p.ticker for p in existing_positions
+                    if float(getattr(p, "position_fp", 0) or 0) != 0
+                }
+                if match.ticker in held_tickers:
+                    seen_trades.add(trade_key)
+                    continue
+            except Exception as e:
+                print(f"[safety] could not verify existing positions, skipping trade to be safe: {e}")
                 continue
             yes_ask = getattr(match, "yes_ask_dollars", None)
             if not yes_ask:
