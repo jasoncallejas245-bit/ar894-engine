@@ -1,4 +1,3 @@
 pykalshi==2.0.0
-sharpapi
 flask
 requests==2.32.5

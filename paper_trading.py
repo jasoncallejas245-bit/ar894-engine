@@ -3,26 +3,25 @@ import statistics
 import requests
 from datetime import datetime, timezone
 
-import os as _os
 from state_io import atomic_write_json, safe_read_json
 import context_data
 
-DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
-PAPER_TRADES_FILE = _os.path.join(DATA_DIR, "paper_trades.json")
-BTC_PRICE_HISTORY_FILE = _os.path.join(DATA_DIR, "btc_price_history.json")
-PAPER_BANKROLL_FILE = _os.path.join(DATA_DIR, "paper_bankroll.json")
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
+PAPER_TRADES_FILE = os.path.join(DATA_DIR, "paper_trades.json")
+BTC_PRICE_HISTORY_FILE = os.path.join(DATA_DIR, "btc_price_history.json")
+PAPER_BANKROLL_FILE = os.path.join(DATA_DIR, "paper_bankroll.json")
 
 # Every paper trade now sizes itself like a real $5 bet, instead of the old
 # "1 contract at entry price" math -- so the logged hypothetical P&L reflects
 # what would actually happen if this pick had been placed for real at the
 # stake size this bot actually uses, and the numbers are comparable across
 # BTC and moneyline.
-PAPER_STAKE_DOLLARS = float(_os.getenv("PAPER_STAKE_DOLLARS", "5.0"))
+PAPER_STAKE_DOLLARS = float(os.getenv("PAPER_STAKE_DOLLARS", "5.0"))
 
 # Starting notional bankroll per category, purely for tracking "are we up or
 # down against a hypothetical budget" over time -- has no bearing on real
 # money, just makes the paper data readable as a running balance.
-PAPER_STARTING_BANKROLL = float(_os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
+PAPER_STARTING_BANKROLL = float(os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
 
 
 def load_paper_bankroll():
@@ -554,8 +553,8 @@ def get_paper_trade_summary():
 # ---------------------------------------------------------------------------
 MIN_SAMPLE_FOR_ADJUSTMENT = 30
 
-ADAPTIVE_SETTINGS_FILE = _os.path.join(DATA_DIR, "adaptive_settings.json")
-MONEYLINE_FAVORITE_MIN_PROB_DEFAULT = float(_os.getenv("FAVORITE_MIN_PROB", "0.55"))
+ADAPTIVE_SETTINGS_FILE = os.path.join(DATA_DIR, "adaptive_settings.json")
+MONEYLINE_FAVORITE_MIN_PROB_DEFAULT = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
 # How far above the current favorite bar counts as "close enough that we
 # shouldn't yet trust it" -- e.g. a 0.55 bar with a 0.05 band means picks
 # with fair prob in [0.55, 0.60) get watched as a separate bucket.

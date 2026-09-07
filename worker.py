@@ -1,6 +1,5 @@
 import os
 import time
-import random
 import tempfile
 from datetime import datetime, date
 from collections import defaultdict
@@ -54,12 +53,11 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
-import os as _os
-DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
-DAILY_STATE_FILE = _os.path.join(DATA_DIR, "daily_trading_state.json")
-SEEN_TRADES_FILE = _os.path.join(DATA_DIR, "seen_trades.json")
-OPEN_POSITIONS_FILE = _os.path.join(DATA_DIR, "open_positions.json")
-LAST_SUMMARY_FILE = _os.path.join(DATA_DIR, "last_summary.json")
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
+DAILY_STATE_FILE = os.path.join(DATA_DIR, "daily_trading_state.json")
+SEEN_TRADES_FILE = os.path.join(DATA_DIR, "seen_trades.json")
+OPEN_POSITIONS_FILE = os.path.join(DATA_DIR, "open_positions.json")
+LAST_SUMMARY_FILE = os.path.join(DATA_DIR, "last_summary.json")
 
 LEAGUE_SERIES = {
     "nfl": "KXNFLGAME",
@@ -280,7 +278,7 @@ def safe_match_event(kalshi_events, away_team, home_team, individual=False):
     return None
 
 
-TRADE_AUDIT_LOG = _os.path.join(DATA_DIR, "trade_audit_log.json")
+TRADE_AUDIT_LOG = os.path.join(DATA_DIR, "trade_audit_log.json")
 
 def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side="YES", event_start_time=None):
     entry = {
