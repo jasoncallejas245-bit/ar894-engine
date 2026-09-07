@@ -156,11 +156,15 @@ def get_available_budget(client, open_positions_dict):
 
 def check_for_new_deposit(client, send_discord_fn, webhook, dashboard_url):
     """
-    Compares real account equity (cash + open position value) against what
-    we'd expect given only allocated budget + realized profit. Any excess
-    beyond a small noise threshold means real money appeared that wasn't
-    accounted for -- i.e. a new deposit. Flags it and asks for an
-    allocation via the dashboard (Discord can't do two-way replies).
+    Flags real new money: live cash balance exceeding what's ever been
+    authorized (total_allocated). Deliberately does NOT factor in realized
+    P&L or open-position value anymore -- this account also has manual
+    trading on it, and Kalshi's realized P&L is account-wide, so trying to
+    "expect" a certain equity level based on it kept producing phantom
+    deposit flags. Balance dipping below total_allocated (from a loss, bot
+    or manual) is not a "missing deposit" -- get_available_budget already
+    handles that by capping at live balance. This only fires when there's
+    genuinely more cash sitting in the account than you've ever approved.
     """
     ledger = load_ledger()
 
@@ -173,13 +177,7 @@ def check_for_new_deposit(client, send_discord_fn, webhook, dashboard_url):
         print(f"[ledger] could not fetch balance: {e}")
         return
 
-    open_value = get_open_position_value(client)
-    realized_profit = get_realized_profit_total(client)
-
-    actual_equity = balance + open_value
-    expected_equity = ledger["total_allocated"] + realized_profit
-
-    surplus = actual_equity - expected_equity
+    surplus = balance - ledger["total_allocated"]
 
     if surplus > DEPOSIT_DETECTION_THRESHOLD:
         ledger["pending_deposit_amount"] = round(surplus, 2)
