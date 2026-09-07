@@ -279,13 +279,21 @@ def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, mat
         json.dump(log, f, indent=2)
 
 
-def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None):
+# Kalshi charges a taker fee on top of the raw stake, and on a cheap/thin
+# contract that fee can be a meaningful chunk of the trade -- the naive
+# stake-vs-available check doesn't leave room for it, which was enough to
+# tip a trade into "insufficient_balance" at the exchange even though our
+# own math said it was affordable. This buffer keeps a margin for that.
+FEE_SAFETY_BUFFER = 1.15
+
+
+def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None, seen_trades=None, trade_key=None):
     side_label = "YES" if side == Side.YES else "NO"
 
     available = ledger.get_available_budget(client, load_open_positions())
     stake = price_dollars * count_fp
-    if stake > available:
-        print(f"Available budget (${available:.2f}) below required stake (${stake:.2f}) — skipping {ticker}")
+    if stake * FEE_SAFETY_BUFFER > available:
+        print(f"Available budget (${available:.2f}) below required stake + fee buffer (${stake * FEE_SAFETY_BUFFER:.2f}) — skipping {ticker}")
         return False
 
     if fair_prob is not None:
@@ -316,6 +324,13 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, sid
         return True
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"trade failed for {ticker}: {e}")
+        # A real rejection from the exchange (e.g. insufficient_balance) on
+        # THIS specific order means retrying the identical thing next cycle
+        # is pointless and just spams the same failure repeatedly. Mark it
+        # seen so it's not retried again for this market's lifetime.
+        if seen_trades is not None and trade_key is not None:
+            seen_trades.add(trade_key)
+            save_seen_trades(seen_trades)
         return False
 
 
@@ -516,7 +531,8 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             matchup_str = f"{edge['away_team']} @ {edge['home_team']}"
             if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
                                    fair_prob=trade_fair_prob, edge_pct=trade_edge_pct,
-                                   matchup=matchup_str, league=league):
+                                   matchup=matchup_str, league=league,
+                                   seen_trades=seen_trades, trade_key=trade_key):
                 seen_trades.add(trade_key)
                 save_seen_trades(seen_trades)
 
@@ -557,7 +573,8 @@ def process_btc_real_trading(client):
     count_fp = max(1.0, ledger.BTC_STAKE_PER_TRADE / ask_price)
 
     msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
-    if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title):
+    if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title,
+                           seen_trades=seen, trade_key=trade_key):
         seen.add(trade_key)
         save_seen_trades(seen)
 
