@@ -61,8 +61,9 @@ PAGE_TEMPLATE = """
 
   <div class="status {{ 'live' if real_trading_on else 'paused' }}">
     <span class="dot"></span>
-    {% if real_trading_on %}LIVE: real money on {{ real_trading_summary }}{% else %}PAUSED — 100% paper trading, no real money at risk{% endif %}
+    {% if real_trading_on %}Using real money on: {{ real_trading_summary }}{% else %}Practice mode — no real money is being risked right now{% endif %}
   </div>
+  <div class="muted" style="margin:-10px 0 16px 0;">{% if real_trading_on %}The bot is placing real bets with real dollars on the leagues listed above.{% else %}Everything below is a simulation — it tracks what WOULD happen so the strategy can be tested safely before any real money is used.{% endif %}</div>
 
   {% if pending_deposit %}
   <div class="alert">
@@ -78,69 +79,73 @@ PAGE_TEMPLATE = """
   <div class="grid2">
     {% for c in categories %}
     <div class="card">
-      <h3>{{ c.label }} · ${{ "%.0f"|format(paper_stake) }}/pick</h3>
+      <h3>{{ c.label }} — practice bets of ${{ "%.0f"|format(paper_stake) }} each</h3>
       <div class="big {{ 'green' if not c.bankroll_down else 'red' }}">
         ${{ "%.2f"|format(c.bankroll_balance) }}
       </div>
-      <div class="sub">{% if c.bankroll_down %}down ${{ "%.2f"|format(c.bankroll_down_by) }} from ${{ "%.0f"|format(paper_starting_bankroll) }} start{% else %}up from ${{ "%.0f"|format(paper_starting_bankroll) }} start{% endif %}</div>
+      <div class="sub">{% if c.bankroll_down %}Started with ${{ "%.0f"|format(paper_starting_bankroll) }} play money — currently DOWN ${{ "%.2f"|format(c.bankroll_down_by) }}{% else %}Started with ${{ "%.0f"|format(paper_starting_bankroll) }} play money — currently UP{% endif %}</div>
+      <div class="sub" style="margin-top:2px;">↑ Would this strategy be making or losing money, if it were real?</div>
 
-      <div class="row" style="margin-top:12px;">
-        <span class="label">Win rate</span>
-        <span>{% if c.summary.resolved > 0 %}{{ "%.0f"|format(c.summary.win_rate) }}% ({{ c.summary.resolved }} resolved){% else %}no resolved picks yet{% endif %}</span>
+      <div class="row" style="margin-top:14px;">
+        <span class="label">How often it's right</span>
+        <span>{% if c.summary.resolved > 0 %}{{ "%.0f"|format(c.summary.win_rate) }}% correct (out of {{ c.summary.resolved }} finished bets){% else %}no finished bets yet{% endif %}</span>
       </div>
       <div class="row">
         <span class="label">{{ c.setting_label }}</span>
         <span>{{ c.setting_value }}</span>
       </div>
+      <div class="sub">↑ {{ c.setting_explanation }}</div>
 
-      <div class="row" style="margin-top:10px;">
-        <span class="label">Learning progress</span>
-        <span class="muted">{{ c.sample }}/{{ min_sample }}</span>
+      <div class="row" style="margin-top:12px;">
+        <span class="label">Data collected</span>
+        <span class="muted">{{ c.sample }} of {{ min_sample }} needed</span>
       </div>
       <div class="bar"><div class="bar-fill" style="width:{{ (100 * c.sample / min_sample)|round(0, 'floor')|int if c.sample < min_sample else 100 }}%;"></div></div>
+      <div class="sub">↑ It won't change its own settings until it has {{ min_sample }} finished bets to learn from — right now it's just gathering evidence.</div>
     </div>
     {% endfor %}
   </div>
 
   <div class="card">
-    <h3>Too Close To Call — Context</h3>
+    <h3>Close Calls — Extra Info</h3>
+    <div class="sub" style="margin-bottom:10px;">These are picks that only barely qualified as a "safe enough" bet — basically a coin flip with a slight edge. For those, it checks injuries and weather (free, real data) so there's more to go on than just the odds.</div>
     {% if too_close_picks %}
       {% for p in too_close_picks[:6] %}
       <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span></div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · fair {{ "%.0f"|format(p.market_probability*100) }}% · {{ p.status }}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format(p.market_probability*100) }}% likely to win · {{ p.status }}</div>
           {% if p.context_note %}
             <div class="sub" style="white-space:pre-line; margin-top:4px;">{{ p.context_note }}</div>
           {% else %}
-            <div class="sub" style="margin-top:4px;">No injury/weather flags found.</div>
+            <div class="sub" style="margin-top:4px;">Nothing notable found — no key injuries, normal weather.</div>
           {% endif %}
         </div>
       </div>
       {% endfor %}
     {% else %}
-      <div class="muted">No borderline picks yet — these are picks that clear the favorite bar but only just.</div>
+      <div class="muted">None right now — no picks have been this close to a coin flip yet.</div>
     {% endif %}
   </div>
 
   {% if adaptive.last_adjusted %}
-  <div class="muted" style="text-align:center; margin-bottom:8px;">Learning system last adjusted something: {{ adaptive.last_adjusted }}</div>
+  <div class="muted" style="text-align:center; margin-bottom:8px;">Last time it changed a setting on its own: {{ adaptive.last_adjusted }}</div>
   {% endif %}
 
   <details>
-    <summary>Real-money account &amp; trade history</summary>
+    <summary>Your real Kalshi account (actual dollars — for reference)</summary>
 
     <div class="card">
-      <div class="row"><span class="label">Kalshi balance</span><span>${{ "%.2f"|format(balance) }}</span></div>
-      <div class="row"><span class="label">Available to trade</span><span>${{ "%.2f"|format(available_budget) }}</span></div>
-      <div class="row"><span class="label">Currently committed</span><span>${{ "%.2f"|format(committed) }}</span></div>
-      <div class="row"><span class="label">Bot's realized profit</span>
+      <div class="row"><span class="label">Money in your Kalshi account</span><span>${{ "%.2f"|format(balance) }}</span></div>
+      <div class="row"><span class="label">How much the bot is allowed to use</span><span>${{ "%.2f"|format(available_budget) }}</span></div>
+      <div class="row"><span class="label">Tied up in open real bets right now</span><span>${{ "%.2f"|format(committed) }}</span></div>
+      <div class="row"><span class="label">Real profit/loss so far (this bot only)</span>
         <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
       </div>
     </div>
 
     <div class="card">
-      <h3>Open Positions ({{ positions|length }})</h3>
+      <h3>Currently Open Real Bets ({{ positions|length }})</h3>
       {% if positions %}
         {% for p in positions %}
         <div class="row"><span>{{ p.ticker }}</span><span class="badge">{{ p.position_fp }} contracts</span></div>
@@ -151,7 +156,7 @@ PAGE_TEMPLATE = """
     </div>
 
     <div class="card">
-      <h3>Recent Real Trades</h3>
+      <h3>Recent Real Bets Placed</h3>
       {% if trade_log %}
         <table>
           <tr><td><b>League</b></td><td><b>Matchup</b></td><td><b>Side</b></td><td><b>Edge</b></td><td><b>Stake</b></td></tr>
@@ -230,23 +235,25 @@ def dashboard():
 
     categories = [
         {
-            "key": "moneyline", "label": "Moneyline",
+            "key": "moneyline", "label": "Sports Moneyline (NFL/NCAAF/MLB/UFC/ATP)",
             "summary": summary["moneyline"],
             "bankroll_balance": ml_bank["balance"],
             "bankroll_down": ml_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - ml_bank["balance"]),
-            "setting_label": "Favorite bar",
+            "setting_label": "How sure it must be to bet",
             "setting_value": favorite_note,
+            "setting_explanation": "It only bets on a team if it thinks they're at least this likely to win. Higher = more cautious, fewer bets.",
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
         },
         {
-            "key": "btc", "label": "BTC 15min",
+            "key": "btc", "label": "Bitcoin Price (15-min bets)",
             "summary": summary["btc"],
             "bankroll_balance": btc_bank["balance"],
             "bankroll_down": btc_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - btc_bank["balance"]),
-            "setting_label": "Momentum window",
-            "setting_value": f"{btc_window} readings",
+            "setting_label": "How far back it looks",
+            "setting_value": f"last {btc_window} price checks",
+            "setting_explanation": "It guesses UP or DOWN based on which way the price has moved over this many recent checks.",
             "sample": min(adaptive.get("btc_sample_size", 0), min_sample),
         },
     ]
