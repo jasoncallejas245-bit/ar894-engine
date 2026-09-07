@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 import os as _os
 DATA_DIR = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
@@ -72,6 +72,22 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
         best_row_a = list(rows_a.values())[0]
         away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
+
+        # Only paper-pick games starting soon, same window real trading uses
+        # (NEAR_TERM_HOURS, default 36h) -- otherwise picks pile up for games
+        # weeks out that can't resolve for a long time, which is what was
+        # happening before this filter existed.
+        near_term_hours = float(os.getenv("NEAR_TERM_HOURS", "36"))
+        start_str = best_row_a.get("event_start_time")
+        if not start_str:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        hours_until = (start_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+        if not (0 <= hours_until <= near_term_hours):
+            continue
 
         match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp', 'wta'}))
         if not match_map:
@@ -261,15 +277,19 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     paper_data["btc"].append(pick)
     save_paper_trades(paper_data)
 
-    price_note = f"${entry_price:.2f}" if entry_price else "price unavailable"
-    msg = (
-        f"[PAPER TRADE - BTC 15min] Predicting: {direction.upper()}\n"
-        f"Market: {market.title}\n"
-        f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f})\n"
-        f"Entry price: {price_note}\n"
-        f"(No real money -- experimental signal, tracking for accuracy and P&L)"
-    )
-    send_discord_fn(webhook, msg)
+    # Notifying on every paper pick got noisy since it fires far more often
+    # than real trades and never risks money -- default OFF, opt back in
+    # with BTC_PAPER_NOTIFY=true if you want the pings again.
+    if os.getenv("BTC_PAPER_NOTIFY", "false").lower() == "true":
+        price_note = f"${entry_price:.2f}" if entry_price else "price unavailable"
+        msg = (
+            f"[PAPER TRADE - BTC 15min] Predicting: {direction.upper()}\n"
+            f"Market: {market.title}\n"
+            f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f})\n"
+            f"Entry price: {price_note}\n"
+            f"(No real money -- experimental signal, tracking for accuracy and P&L)"
+        )
+        send_discord_fn(webhook, msg)
     return pick
 
 
