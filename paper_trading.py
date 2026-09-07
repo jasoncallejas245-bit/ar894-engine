@@ -1,8 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime, date
-from collections import defaultdict
+from datetime import datetime
 
 PAPER_TRADES_FILE = "paper_trades.json"
 BTC_PRICE_HISTORY_FILE = "btc_price_history.json"
@@ -21,19 +20,12 @@ def save_paper_trades(data):
 
 
 # ---------------------------------------------------------------------------
-# Moneyline paper trading: pick the market's own de-vigged consensus favorite
+# Moneyline paper trading
 # ---------------------------------------------------------------------------
-def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, send_discord_fn, webhook):
-    """
-    For each game, compute the de-vigged consensus probability (averaged
-    across whatever books we have) and 'pick' whichever side is favored.
-    This is NOT a proprietary edge -- it is the market's own consensus,
-    logged honestly as a baseline experiment.
-    """
+def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook):
     from collections import defaultdict as dd
 
     grouped = dd(dict)
-    print(f"[paper-ml] {league} got {len(sharpapi_rows)} raw rows")
     for row in sharpapi_rows:
         if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
             continue
@@ -47,12 +39,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, send_discor
     paper_data = load_paper_trades()
     already_picked = {p["event_id"] for p in paper_data["moneyline"]}
     new_picks = []
-    print(f"[paper-ml] {league} grouped into {len(by_event)} candidate events")
 
     for event_id, selections in by_event.items():
         if event_id in already_picked or len(selections) != 2:
             continue
-        print(f"[paper-ml] event {event_id}: {len(selections)} selections, common_books check next")
         sel_a, sel_b = list(selections)
         rows_a, rows_b = grouped[(event_id, sel_a)], grouped[(event_id, sel_b)]
         common_books = set(rows_a.keys()) & set(rows_b.keys())
@@ -74,14 +64,28 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, send_discor
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
         picked_selection, picked_prob = (sel_a, fair_a) if fair_a > fair_b else (sel_b, fair_b)
         best_row = list((rows_a if picked_selection == sel_a else rows_b).values())[0]
+        away_team, home_team = best_row.get("away_team"), best_row.get("home_team")
+
+        # Find the matching Kalshi ticker and its real current price -- this is
+        # what makes P&L tracking possible, not just win/loss.
+        match_map = safe_match_fn(kalshi_events, away_team, home_team)
+        kalshi_ticker, entry_price = None, None
+        if match_map:
+            match = match_map.get(picked_selection)
+            if match:
+                kalshi_ticker = match.ticker
+                yes_ask = getattr(match, "yes_ask_dollars", None)
+                entry_price = float(yes_ask) if yes_ask else None
 
         pick = {
             "league": league.upper(),
             "event_id": event_id,
-            "away_team": best_row.get("away_team"),
-            "home_team": best_row.get("home_team"),
+            "away_team": away_team,
+            "home_team": home_team,
             "picked_team": picked_selection,
             "market_probability": picked_prob,
+            "kalshi_ticker": kalshi_ticker,
+            "entry_price": entry_price,
             "picked_at": datetime.now().isoformat(),
             "status": "pending",
         }
@@ -91,38 +95,67 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, send_discor
     if new_picks:
         save_paper_trades(paper_data)
         for p in new_picks:
+            price_note = f"${p['entry_price']:.2f}" if p["entry_price"] else "price unavailable yet"
             msg = (
                 f"[PAPER TRADE - {p['league']}] Picked {p['picked_team']}\n"
                 f"Matchup: {p['away_team']} @ {p['home_team']}\n"
                 f"Market consensus probability: {p['market_probability']*100:.1f}%\n"
-                f"(No real money -- tracking for accuracy)"
+                f"Kalshi entry price: {price_note}\n"
+                f"(No real money -- tracking for accuracy and hypothetical P&L)"
             )
             send_discord_fn(webhook, msg)
 
     return new_picks
 
 
-def resolve_moneyline_paper_trades(client, get_market_fn):
+def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
     """
-    Checks pending paper picks against Kalshi's settled market results
-    (Kalshi settles the corresponding KXNFLGAME/KXNCAAFGAME market once
-    the real game ends) and marks them won/lost.
+    Checks each pending moneyline pick's Kalshi ticker for a settlement
+    result, marks it won/lost, and computes what the actual hypothetical
+    P&L would have been using the real entry price captured at pick time.
     """
     paper_data = load_paper_trades()
-    resolved_any = False
+    changed = False
 
     for pick in paper_data["moneyline"]:
-        if pick["status"] != "pending":
+        if pick["status"] != "pending" or not pick.get("kalshi_ticker"):
             continue
-        # We don't store the Kalshi ticker at pick time in this simple version,
-        # so resolution happens via a separate matching pass in the worker.
-        pass
 
-    return resolved_any
+        try:
+            market = client.get_market(pick["kalshi_ticker"])
+        except Exception:
+            continue
+
+        result = getattr(market, "result", None)
+        if result not in ("yes", "no"):
+            continue  # not settled yet
+
+        won = (result == "yes")
+        pick["status"] = "won" if won else "lost"
+        pick["resolved_at"] = datetime.now().isoformat()
+
+        if pick.get("entry_price"):
+            # Hypothetical: 1 contract at entry_price. Win = payout $1, Loss = lose the stake.
+            pick["hypothetical_pnl"] = (1.0 - pick["entry_price"]) if won else -pick["entry_price"]
+        else:
+            pick["hypothetical_pnl"] = None
+
+        changed = True
+        if send_discord_fn and webhook:
+            pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A (no entry price captured)"
+            send_discord_fn(
+                webhook,
+                f"[RESOLVED - {pick['league']}] {pick['picked_team']}: {pick['status'].upper()} "
+                f"(hypothetical P&L: {pnl_str})",
+            )
+
+    if changed:
+        save_paper_trades(paper_data)
+    return changed
 
 
 # ---------------------------------------------------------------------------
-# BTC 15-min paper trading: simple momentum signal
+# BTC 15-min paper trading
 # ---------------------------------------------------------------------------
 def get_btc_spot_price():
     try:
@@ -141,19 +174,12 @@ def load_btc_price_history():
 
 
 def save_btc_price_history(history):
-    # Keep only the last 20 readings -- enough for a short momentum window
     history = history[-20:]
     with open(BTC_PRICE_HISTORY_FILE, "w") as f:
         json.dump(history, f)
 
 
 def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
-    """
-    Simple momentum experiment: if BTC has moved up over the last few
-    readings, 'predict' up; if down, predict down. This is a naive
-    baseline, explicitly not a validated strategy -- the point of paper
-    trading it is to find out honestly whether it does anything at all.
-    """
     price = get_btc_spot_price()
     if price is None:
         return None
@@ -163,7 +189,7 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     save_btc_price_history(history)
 
     if len(history) < 3:
-        return None  # not enough data yet to compute momentum
+        return None
 
     momentum = history[-1]["price"] - history[-3]["price"]
     direction = "up" if momentum > 0 else "down"
@@ -177,7 +203,6 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     if not markets:
         return None
 
-    # Nearest-expiry open market
     market = sorted(markets, key=lambda m: getattr(m, "close_time", None) or "9999")[0]
 
     paper_data = load_paper_trades()
@@ -185,30 +210,40 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     if market.ticker in already_picked:
         return None
 
+    entry_price = None
+    yes_ask = getattr(market, "yes_ask_dollars", None)
+    no_ask = getattr(market, "no_ask_dollars", None)
+    if direction == "up" and yes_ask:
+        entry_price = float(yes_ask)
+    elif direction == "down" and no_ask:
+        entry_price = float(no_ask)
+
     pick = {
         "ticker": market.ticker,
         "title": market.title,
         "predicted_direction": direction,
         "btc_price_at_pick": price,
         "momentum_signal": momentum,
+        "entry_price": entry_price,
         "picked_at": datetime.now().isoformat(),
         "status": "pending",
     }
     paper_data["btc"].append(pick)
     save_paper_trades(paper_data)
 
+    price_note = f"${entry_price:.2f}" if entry_price else "price unavailable"
     msg = (
         f"[PAPER TRADE - BTC 15min] Predicting: {direction.upper()}\n"
         f"Market: {market.title}\n"
-        f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f} over last readings)\n"
-        f"(No real money -- experimental signal, tracking for accuracy)"
+        f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f})\n"
+        f"Entry price: {price_note}\n"
+        f"(No real money -- experimental signal, tracking for accuracy and P&L)"
     )
     send_discord_fn(webhook, msg)
     return pick
 
 
-def resolve_btc_paper_trades(client):
-    """Checks pending BTC picks against settled market results."""
+def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
     paper_data = load_paper_trades()
     changed = False
 
@@ -221,11 +256,23 @@ def resolve_btc_paper_trades(client):
             continue
 
         result = getattr(market, "result", None)
-        if result in ("yes", "no"):
-            actual_direction = "up" if result == "yes" else "down"
-            pick["status"] = "won" if actual_direction == pick["predicted_direction"] else "lost"
-            pick["resolved_at"] = datetime.now().isoformat()
-            changed = True
+        if result not in ("yes", "no"):
+            continue
+
+        actual_direction = "up" if result == "yes" else "down"
+        won = (actual_direction == pick["predicted_direction"])
+        pick["status"] = "won" if won else "lost"
+        pick["resolved_at"] = datetime.now().isoformat()
+
+        if pick.get("entry_price"):
+            pick["hypothetical_pnl"] = (1.0 - pick["entry_price"]) if won else -pick["entry_price"]
+        else:
+            pick["hypothetical_pnl"] = None
+
+        changed = True
+        if send_discord_fn and webhook:
+            pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A"
+            send_discord_fn(webhook, f"[RESOLVED - BTC] {pick['title']}: {pick['status'].upper()} (hypothetical P&L: {pnl_str})")
 
     if changed:
         save_paper_trades(paper_data)
@@ -239,10 +286,14 @@ def get_paper_trade_summary():
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
+        pnls = [t["hypothetical_pnl"] for t in resolved if t.get("hypothetical_pnl") is not None]
+
         summary[category] = {
             "total_picks": len(trades),
             "resolved": len(resolved),
             "wins": len(wins),
             "win_rate": (len(wins) / len(resolved) * 100) if resolved else None,
+            "total_hypothetical_pnl": sum(pnls) if pnls else None,
+            "pnl_sample_size": len(pnls),
         }
     return summary
