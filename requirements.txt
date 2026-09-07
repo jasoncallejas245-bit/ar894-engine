@@ -1,4 +1,2 @@
-pykalshi
-sharpapi
-flask
-requests
+pykalshi==2.0.0
+requests==2.32.5

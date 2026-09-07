@@ -30,6 +30,12 @@ DAILY_LOSS_CAP = float(os.getenv("DAILY_LOSS_CAP", "5.00"))
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
+# Sports (SharpAPI) scanning stays on its own slower cadence -- games move
+# on a much longer clock than BTC's 15-minute windows, and SharpAPI calls
+# are the heavier/more rate-limit-sensitive part. BTC checks, position
+# closes/reconciliation, and paper-trade resolution still run every
+# SCAN_INTERVAL_SECONDS regardless of this.
+SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
 import os as _os
@@ -616,9 +622,13 @@ def check_daily_summary():
         json.dump({"date": today}, f)
 
 
-def run_once(client, seen_trades):
+def run_once(client, seen_trades, run_sports_scan=True):
     check_and_close_profitable_positions(client)
     reconcile_settled_positions(client)
+
+    if not run_sports_scan:
+        run_btc_and_resolution(client)
+        return
 
     # Real trading + paper tracking for money-risk leagues
     for league in LEAGUE_SERIES.keys():
@@ -647,6 +657,14 @@ def run_once(client, seen_trades):
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] paper scan error: {e}")
 
+    run_btc_and_resolution(client)
+
+
+def run_btc_and_resolution(client):
+    """Everything that should run on the FAST cadence (SCAN_INTERVAL_SECONDS)
+    regardless of whether this cycle also did a full sports scan: BTC's own
+    15-minute windows move much faster than sports games do, so this stays
+    decoupled from SPORTS_SCAN_INTERVAL_SECONDS."""
     try:
         print("[btc] checking momentum...")
         process_btc_real_trading(client)
@@ -692,9 +710,14 @@ def main():
     client = KalshiClient()
 
     send_discord(DISCORD_WEBHOOK_UPDATES, "Systems online, sir. Now watching both sides of the market. I'll only speak up when there's something worth saying.")
+
+    last_sports_scan = 0.0
     while True:
+        run_sports_scan = (time.time() - last_sports_scan) >= SPORTS_SCAN_INTERVAL_SECONDS
         try:
-            run_once(client, seen_trades)
+            run_once(client, seen_trades, run_sports_scan=run_sports_scan)
+            if run_sports_scan:
+                last_sports_scan = time.time()
         except Exception as e:
             print(f"[loop] error: {e}")
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + str(e))
