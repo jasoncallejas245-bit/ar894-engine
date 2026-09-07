@@ -262,11 +262,12 @@ def safe_match_event(kalshi_events, away_team, home_team, individual=False):
 
 TRADE_AUDIT_LOG = _os.path.join(DATA_DIR, "trade_audit_log.json")
 
-def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side="YES"):
+def log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side="YES", event_start_time=None):
     entry = {
         "ticker": ticker, "league": league, "matchup": matchup, "side": side,
         "kalshi_price": price_dollars, "fair_prob": fair_prob, "edge_pct": edge_pct,
         "count_fp": count_fp, "stake": price_dollars * count_fp,
+        "event_start_time": event_start_time,  # when the game itself was/is, not when we decided
         "decided_at": datetime.now().isoformat(),
     }
     log = []
@@ -308,7 +309,7 @@ def compute_stake_dollars(available, edge_pct=None):
     return max(min(stake, headroom_cap), ledger.STAKE_MIN_DOLLARS)
 
 
-def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None, seen_trades=None, trade_key=None):
+def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, side=Side.YES, fair_prob=None, edge_pct=None, matchup=None, league=None, seen_trades=None, trade_key=None, event_start_time=None):
     side_label = "YES" if side == Side.YES else "NO"
 
     state = load_daily_state()
@@ -320,7 +321,7 @@ def execute_kalshi_buy(client, ticker, price_dollars, count_fp, discord_msg, sid
         return False
 
     if fair_prob is not None:
-        log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side_label)
+        log_trade_decision(ticker, price_dollars, count_fp, fair_prob, edge_pct, matchup, league, side_label, event_start_time=event_start_time)
 
     try:
         price_kwargs = (
@@ -557,7 +558,8 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             if execute_kalshi_buy(client, match.ticker, trade_price, count_fp, msg, side=side_to_trade,
                                    fair_prob=trade_fair_prob, edge_pct=trade_edge_pct,
                                    matchup=matchup_str, league=league,
-                                   seen_trades=seen_trades, trade_key=trade_key):
+                                   seen_trades=seen_trades, trade_key=trade_key,
+                                   event_start_time=edge.get("event_start_time")):
                 seen_trades.add(trade_key)
                 save_seen_trades(seen_trades)
 

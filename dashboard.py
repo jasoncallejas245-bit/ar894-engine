@@ -209,6 +209,31 @@ def reset_allocation():
     return redirect("/")
 
 
+@app.route("/trade_audit_log")
+def trade_audit_log_route():
+    """
+    Shows every real-money trade DECISION the bot has logged -- the fair
+    probability it calculated, the price Kalshi was offering, and the edge
+    it thought it saw -- so a specific trade can be checked after the fact.
+    Only logged for sports/moneyline trades (BTC doesn't have a "fair prob"
+    to compare against). Newest first. Optional ?league=ufc or ?search=berisha
+    to filter.
+    """
+    path = os.path.join(DATA_DIR, "trade_audit_log.json")
+    if not os.path.exists(path):
+        return "No trade decisions logged yet.\n"
+    with open(path) as f:
+        log = json.load(f)
+    league = request.args.get("league", "").lower()
+    search = request.args.get("search", "").lower()
+    if league:
+        log = [e for e in log if str(e.get("league", "")).lower() == league]
+    if search:
+        log = [e for e in log if search in str(e.get("matchup", "")).lower() or search in str(e.get("ticker", "")).lower()]
+    log = list(reversed(log))
+    return {"count": len(log), "decisions": log}
+
+
 @app.route("/purge_stale_moneyline_picks", methods=["POST"])
 def purge_stale_moneyline_picks_route():
     """One-time cleanup for moneyline paper picks made before the
