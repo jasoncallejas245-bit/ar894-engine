@@ -94,6 +94,15 @@ REAL_TRADING_LEAGUES = set()
 # record. Flip back on with BTC_REAL_TRADING_ENABLED=true once ready.
 BTC_REAL_TRADING_ENABLED = os.getenv("BTC_REAL_TRADING_ENABLED", "false").lower() == "true"
 
+# Optional hard cap on a single real BTC stake, in dollars -- unset by
+# default, which preserves the existing "use the full available budget"
+# behavior exactly as before. Set this (e.g. BTC_MAX_STAKE_DOLLARS=1.00)
+# to run a deliberately small, bounded real-money test without touching
+# the approved allowance itself. Safe to leave set permanently too, if
+# a smaller-than-full-budget stake size is ever wanted long-term.
+_btc_max_stake_env = os.getenv("BTC_MAX_STAKE_DOLLARS")
+BTC_MAX_STAKE_DOLLARS = float(_btc_max_stake_env) if _btc_max_stake_env else None
+
 # Kalshi split BTC/crypto markets onto their own "exchange shard" (shard
 # index 2) on 2026-08-24 -- collateral has to be pre-allocated on that
 # specific shard before an order can land there, separate from the
@@ -814,6 +823,8 @@ def process_btc_real_trading(client):
 
     available = ledger.get_available_budget(client, load_open_positions())
     stake_dollars = compute_stake_dollars(available)  # BTC may use the full available budget
+    if BTC_MAX_STAKE_DOLLARS is not None:
+        stake_dollars = min(stake_dollars, BTC_MAX_STAKE_DOLLARS)
     count_fp = max(1.0, stake_dollars / ask_price)
 
     # SHARD FUNDING HOOK -- delete this block to remove the feature (see
