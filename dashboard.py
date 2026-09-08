@@ -578,6 +578,23 @@ def shard_balance_route():
     raw_attrs = [a for a in dir(client) if not a.startswith("__") and a not in ("portfolio",)]
     result["client_top_level_attrs"] = raw_attrs
 
+    # Per Kalshi's own docs, GET /portfolio/balance (no exchange_index)
+    # already aggregates across every shard AND returns a
+    # "balance_breakdown" array showing the split per exchange_index --
+    # this is the real answer to "is money actually sitting on the
+    # crypto shard", independent of whether pykalshi's typed
+    # get_balance() wrapper happens to expose that field yet.
+    for method_name in ("get", "_request", "paginated_get"):
+        method = getattr(client, method_name, None)
+        if method is None:
+            continue
+        try:
+            raw = method("/portfolio/balance")
+            result[f"raw_balance_via_{method_name}"] = raw
+            break
+        except Exception as e:
+            result[f"raw_balance_via_{method_name}_error"] = str(e)
+
     return result
 
 
