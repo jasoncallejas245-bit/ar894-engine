@@ -53,7 +53,6 @@ def save_bot_pnl(data):
 def record_bot_trade_result(ticker, pnl, note=""):
     data = load_bot_pnl()
     data["total"] = round(data["total"] + pnl, 4)
-    data["peak"] = round(max(data.get("peak", 0.0), data["total"]), 4)
     data["history"].append({"ticker": ticker, "pnl": pnl, "note": note, "at": datetime.now().isoformat()})
     save_bot_pnl(data)
     return data["total"]
@@ -63,18 +62,26 @@ def get_bot_realized_profit():
     return load_bot_pnl()["total"]
 
 
-# How much the bot's own real-money lifetime P&L is allowed to fall from
-# its peak (not just from zero -- this also catches giving back a big
-# chunk of real profit, not only a net loss from scratch) before real
-# trading auto-halts. Paper trading is never affected by this -- it's a
-# real-money-only safety net.
-MAX_DRAWDOWN_DOLLARS = float(os.getenv("MAX_DRAWDOWN_DOLLARS", "10.00"))
+# Real trading halts on actual LOSSES only, measured as a percentage of
+# your allocated budget -- never on giving back profit. Profit sitting in
+# lifetime P&L was never going to be spent (get_available_budget caps
+# every real stake at total_allocated regardless of P&L -- see above), so
+# there's nothing to "protect" by halting when it dips off a peak. This
+# only cares about money actually lost.
+MAX_LOSS_PERCENT = float(os.getenv("MAX_LOSS_PERCENT", "20.0"))
 
 
-def get_drawdown():
-    """Dollars below the bot's own real-money peak realized P&L right now."""
+def get_realized_loss_pct():
+    """0 if flat or in profit; otherwise how much has actually been lost,
+    as a percentage of the allocated budget."""
     data = load_bot_pnl()
-    return round(data.get("peak", 0.0) - data.get("total", 0.0), 4)
+    total = data.get("total", 0.0)
+    if total >= 0:
+        return 0.0
+    allocated = load_ledger().get("total_allocated", 0.0)
+    if allocated <= 0:
+        return 0.0
+    return round((-total / allocated) * 100, 2)
 
 
 def is_trading_halted():
@@ -102,23 +109,33 @@ def resume_trading():
     save_bot_pnl(data)
 
 
-def check_drawdown_circuit_breaker(send_discord_fn, webhook):
+def check_loss_limit_circuit_breaker(send_discord_fn, webhook):
     """
     Call this right after any REAL trade settles (win, loss, or early
-    profit-take). If the bot's real-money lifetime P&L has fallen
-    MAX_DRAWDOWN_DOLLARS or more below its own peak, halts ALL real
-    trading (sports + BTC) immediately -- paper trading keeps running
-    untouched. Sends exactly one Discord alert when the halt first
-    triggers; does not spam on every cycle after that. Re-enabling is a
-    manual action (resume_trading / POST /resume_trading) so a losing
-    streak can't quietly turn back on by itself.
+    profit-take). Only ever fires on actual net losses -- being in
+    profit, even after giving some of it back, never halts anything.
+    Once real losses reach MAX_LOSS_PERCENT of the allocated budget,
+    halts ALL real trading (sports + BTC) immediately -- paper trading
+    keeps running untouched. Sends exactly one Discord alert when the
+    halt first triggers; does not spam on every cycle after that.
+    Re-enabling is a manual action (resume_trading / POST
+    /resume_trading) so a losing streak can't quietly turn back on.
     """
-    dd = get_drawdown()
-    if dd >= MAX_DRAWDOWN_DOLLARS and halt_trading(f"drawdown ${dd:.2f} >= limit ${MAX_DRAWDOWN_DOLLARS:.2f}"):
+    data = load_bot_pnl()
+    total = data.get("total", 0.0)
+    if total >= 0:
+        return  # in profit (or flat) -- never halts on this
+    allocated = load_ledger().get("total_allocated", 0.0)
+    if allocated <= 0:
+        return
+    loss_pct = (-total / allocated) * 100
+    if loss_pct >= MAX_LOSS_PERCENT and halt_trading(
+        f"real losses ${-total:.2f} = {loss_pct:.1f}% of ${allocated:.2f} allocated (limit {MAX_LOSS_PERCENT:.0f}%)"
+    ):
         send_discord_fn(
             webhook,
-            f"\U0001F6D1 REAL TRADING AUTO-HALTED, sir. Drawdown from the bot's own peak "
-            f"real-money profit hit ${dd:.2f} (limit ${MAX_DRAWDOWN_DOLLARS:.2f}). "
+            f"\U0001F6D1 REAL TRADING AUTO-HALTED, sir. Real losses hit ${-total:.2f} "
+            f"({loss_pct:.1f}% of your ${allocated:.2f} allowance -- limit is {MAX_LOSS_PERCENT:.0f}%). "
             f"All real-money trading is stopped -- paper trading keeps running normally "
             f"so you can keep evaluating the strategy. Nothing resumes on its own; "
             f"re-enable manually once you've reviewed what happened."

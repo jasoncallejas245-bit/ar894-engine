@@ -606,7 +606,7 @@ def check_and_close_profitable_positions(client):
                 # own ledger before -- fixed, since the drawdown circuit
                 # breaker below needs an accurate lifetime P&L to work off.
                 ledger.record_bot_trade_result(ticker, profit, note=f"{side_label} early-profit exit")
-                ledger.check_drawdown_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
+                ledger.check_loss_limit_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
                 del positions[ticker]
                 save_open_positions(positions)
             except Exception as e:
@@ -663,7 +663,7 @@ def reconcile_settled_positions(client):
             f"[SETTLED] {ticker} [{side_label}]: {'WON' if won else 'LOST'} "
             f"(P&L: ${pnl:+.2f}, bot lifetime P&L: ${new_total:+.2f})"
         )
-        ledger.check_drawdown_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
+        ledger.check_loss_limit_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
 
         del positions[ticker]
         save_open_positions(positions)

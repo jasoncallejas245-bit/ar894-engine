@@ -148,9 +148,9 @@ PAGE_TEMPLATE = """
       <div class="row"><span class="label">Real trading status</span>
         <span class="red">HALTED -- {{ halted_reason }}</span>
       </div>
-      <div class="muted">Auto-stopped by the drawdown safety net (limit ${{ "%.2f"|format(drawdown_limit) }}). Paper trading is unaffected. Won't resume on its own -- POST /resume_trading when you're ready.</div>
+      <div class="muted">Auto-stopped by the loss-limit safety net (halts at {{ "%.0f"|format(loss_limit_percent) }}% of your allowance lost -- never on giving back profit). Paper trading is unaffected. Won't resume on its own -- POST /resume_trading when you're ready.</div>
       {% else %}
-      <div class="row"><span class="label">Real trading status</span><span class="green">Active (drawdown limit ${{ "%.2f"|format(drawdown_limit) }})</span></div>
+      <div class="row"><span class="label">Real trading status</span><span class="green">Active (halts on real losses reaching {{ "%.0f"|format(loss_limit_percent) }}% of allowance{{ " -- currently %.1f%%"|format(current_loss_pct) if current_loss_pct > 0 else "" }})</span></div>
       {% endif %}
     </div>
 
@@ -300,6 +300,7 @@ def dashboard():
 
     trading_halted = ledger.is_trading_halted()
     bot_pnl_data = ledger.load_bot_pnl()
+    current_loss_pct = ledger.get_realized_loss_pct()
 
     return render_template_string(
         PAGE_TEMPLATE,
@@ -321,7 +322,8 @@ def dashboard():
         real_trading_summary=real_trading_summary,
         trading_halted=trading_halted,
         halted_reason=bot_pnl_data.get("halted_reason"),
-        drawdown_limit=ledger.MAX_DRAWDOWN_DOLLARS,
+        loss_limit_percent=ledger.MAX_LOSS_PERCENT,
+        current_loss_pct=current_loss_pct,
     )
 
 
@@ -814,9 +816,9 @@ def circuit_breaker_status_route():
         "halted_reason": data.get("halted_reason"),
         "halted_at": data.get("halted_at"),
         "bot_lifetime_pnl": data.get("total", 0.0),
-        "peak_pnl": data.get("peak", 0.0),
-        "current_drawdown": ledger.get_drawdown(),
-        "drawdown_limit": ledger.MAX_DRAWDOWN_DOLLARS,
+        "current_realized_loss_pct": ledger.get_realized_loss_pct(),
+        "loss_limit_percent": ledger.MAX_LOSS_PERCENT,
+        "allocated_budget": ledger.load_ledger().get("total_allocated", 0.0),
     }
 
 
