@@ -525,6 +525,62 @@ def purge_pre_threshold_picks_route():
     }
 
 
+@app.route("/shard_balance")
+def shard_balance_route():
+    """
+    Diagnostic for Kalshi's new exchange-sharding rollout (crypto markets
+    moved to a separate exchange shard on 2026-08-24). Programmatic
+    traders must have collateral PRE-ALLOCATED on the shard a market
+    lives on before an order can be placed there -- if the account's
+    cash is sitting on the default shard (0) and BTC/crypto markets now
+    live on shard 2, real BTC orders can fail/reject for balance reasons
+    that have nothing to do with the trading logic itself.
+
+    This calls whatever balance/shard-aware methods the installed
+    pykalshi client actually exposes and reports back what it finds,
+    including a raw introspection of available methods, so this can be
+    diagnosed from real account data instead of guessing at the
+    library's surface. No dashboard button -- hit directly:
+    https://<your-app>.up.railway.app/shard_balance
+    """
+    client = get_client()
+    result = {}
+
+    try:
+        result["default_balance_cents"] = client.portfolio.get_balance().balance
+    except Exception as e:
+        result["default_balance_error"] = str(e)
+
+    portfolio_methods = [m for m in dir(client.portfolio) if not m.startswith("_")]
+    result["portfolio_methods_available"] = portfolio_methods
+
+    # Try every plausible shard-aware call the client might expose, without
+    # assuming which one (if any) this version of pykalshi actually has.
+    per_shard = {}
+    for shard_idx in range(4):
+        for method_name, kwargs in [
+            ("get_balance", {"exchange_index": shard_idx}),
+            ("get_balances", {"exchange_index": shard_idx}),
+        ]:
+            method = getattr(client.portfolio, method_name, None)
+            if method is None:
+                continue
+            try:
+                r = method(**kwargs)
+                per_shard[f"shard_{shard_idx}_via_{method_name}"] = getattr(r, "balance", r)
+            except Exception as e:
+                per_shard[f"shard_{shard_idx}_via_{method_name}_error"] = str(e)
+    result["per_shard_attempts"] = per_shard
+
+    # Some client versions expose a raw request/session escape hatch --
+    # capture what's there so a raw GET /portfolio/balance?exchange_index=
+    # can be attempted if the typed methods don't support shards yet.
+    raw_attrs = [a for a in dir(client) if not a.startswith("__") and a not in ("portfolio",)]
+    result["client_top_level_attrs"] = raw_attrs
+
+    return result
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
