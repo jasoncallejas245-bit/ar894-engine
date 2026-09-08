@@ -195,6 +195,7 @@ def fetch_sharpapi_odds(league):
     """
     all_rows = []
     cursor = None
+    restarted_after_cursor_expiry = False
     for page_num in range(SHARPAPI_MAX_PAGES):
         params = {"league": league, "market": "main", "limit": 200}
         if cursor:
@@ -218,6 +219,24 @@ def fetch_sharpapi_odds(league):
             break
 
         if resp.status_code != 200:
+            # Confirmed live: a long enough 429 wait (rate-limited page 5,
+            # waited 30+s across a redeploy) let the cursor's underlying
+            # "store generation" rotate server-side, so resuming with the
+            # OLD cursor came back as a 400 cursor_expired -- not a 429,
+            # a different failure the retry loop above doesn't catch. The
+            # API's own error message says the fix: drop the cursor and
+            # restart from page 1. Only do this once per fetch (not every
+            # page) so a persistently-failing league can't loop forever.
+            try:
+                is_cursor_expired = resp.json().get("error", {}).get("code") == "cursor_expired"
+            except Exception:
+                is_cursor_expired = False
+            if is_cursor_expired and not restarted_after_cursor_expiry:
+                print(f"[sharpapi] {league} cursor expired mid-fetch -- restarting pagination from page 1")
+                restarted_after_cursor_expiry = True
+                all_rows = []
+                cursor = None
+                continue
             print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
             break
 
