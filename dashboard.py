@@ -682,6 +682,43 @@ def btc_price_paths_route():
     }
 
 
+@app.route("/debug_selections")
+def debug_selections_route():
+    """
+    Diagnostic for the moneyline funnel's biggest bottleneck across most
+    leagues (no_two_sided_odds -- see the funnel counters added to
+    make_moneyline_paper_picks). Groups one league's raw SharpAPI rows by
+    event_id and shows every distinct "selection" string seen for that
+    event -- if the same team shows up spelled differently across
+    sportsbooks, this is where it'd show up as 3+ distinct selections
+    for a game that should only have 2. ?league=mlb (default) or any
+    other league key.
+    """
+    import worker
+    league = request.args.get("league", "mlb")
+    rows = worker.fetch_sharpapi_odds(league)
+    from collections import defaultdict as dd
+    by_event = dd(lambda: dd(set))
+    for row in rows:
+        if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
+            continue
+        by_event[row.get("event_id")]["selections"].add(row.get("selection"))
+        by_event[row.get("event_id")]["books"].add(row.get("sportsbook"))
+        by_event[row.get("event_id")]["teams"] = (row.get("away_team"), row.get("home_team"))
+
+    problem_events = {
+        eid: {"selections": sorted(v["selections"]), "books": sorted(v["books"]), "teams": v["teams"]}
+        for eid, v in by_event.items() if len(v["selections"]) != 2
+    }
+    return {
+        "league": league,
+        "total_rows": len(rows),
+        "total_distinct_events": len(by_event),
+        "events_with_wrong_selection_count": len(problem_events),
+        "sample_problem_events": dict(list(problem_events.items())[:10]),
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
