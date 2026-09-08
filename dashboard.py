@@ -144,6 +144,14 @@ PAGE_TEMPLATE = """
       <div class="row"><span class="label">Real profit/loss so far (this bot only)</span>
         <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
       </div>
+      {% if trading_halted %}
+      <div class="row"><span class="label">Real trading status</span>
+        <span class="red">HALTED -- {{ halted_reason }}</span>
+      </div>
+      <div class="muted">Auto-stopped by the drawdown safety net (limit ${{ "%.2f"|format(drawdown_limit) }}). Paper trading is unaffected. Won't resume on its own -- POST /resume_trading when you're ready.</div>
+      {% else %}
+      <div class="row"><span class="label">Real trading status</span><span class="green">Active (drawdown limit ${{ "%.2f"|format(drawdown_limit) }})</span></div>
+      {% endif %}
     </div>
 
     <div class="card">
@@ -290,6 +298,9 @@ def dashboard():
     if worker.BTC_REAL_TRADING_ENABLED:
         real_trading_summary = (real_trading_summary + " + BTC").strip(" +")
 
+    trading_halted = ledger.is_trading_halted()
+    bot_pnl_data = ledger.load_bot_pnl()
+
     return render_template_string(
         PAGE_TEMPLATE,
         balance=balance,
@@ -308,6 +319,9 @@ def dashboard():
         too_close_picks=too_close_picks,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
+        trading_halted=trading_halted,
+        halted_reason=bot_pnl_data.get("halted_reason"),
+        drawdown_limit=ledger.MAX_DRAWDOWN_DOLLARS,
     )
 
 
@@ -787,6 +801,35 @@ def run_moneyline_scan_route():
         "new_picks_this_call": new_picks,
         "kalshi_events_found": len(kalshi_events),
     }
+
+
+@app.route("/circuit_breaker_status")
+def circuit_breaker_status_route():
+    """Whether real trading is currently auto-halted by the drawdown
+    circuit breaker, and the numbers behind that decision."""
+    import ledger
+    data = ledger.load_bot_pnl()
+    return {
+        "halted": data.get("halted", False),
+        "halted_reason": data.get("halted_reason"),
+        "halted_at": data.get("halted_at"),
+        "bot_lifetime_pnl": data.get("total", 0.0),
+        "peak_pnl": data.get("peak", 0.0),
+        "current_drawdown": ledger.get_drawdown(),
+        "drawdown_limit": ledger.MAX_DRAWDOWN_DOLLARS,
+    }
+
+
+@app.route("/resume_trading", methods=["POST"])
+def resume_trading_route():
+    """Manually clears the drawdown circuit breaker's halt so real trading
+    (sports + BTC, whichever you've separately enabled) can resume. This
+    never happens automatically -- only this call clears it, so a losing
+    streak can't quietly turn itself back on."""
+    import ledger
+    was_halted = ledger.is_trading_halted()
+    ledger.resume_trading()
+    return {"was_halted": was_halted, "now_halted": ledger.is_trading_halted()}
 
 
 if __name__ == "__main__":

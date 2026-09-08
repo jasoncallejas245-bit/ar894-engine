@@ -53,6 +53,7 @@ def save_bot_pnl(data):
 def record_bot_trade_result(ticker, pnl, note=""):
     data = load_bot_pnl()
     data["total"] = round(data["total"] + pnl, 4)
+    data["peak"] = round(max(data.get("peak", 0.0), data["total"]), 4)
     data["history"].append({"ticker": ticker, "pnl": pnl, "note": note, "at": datetime.now().isoformat()})
     save_bot_pnl(data)
     return data["total"]
@@ -60,6 +61,68 @@ def record_bot_trade_result(ticker, pnl, note=""):
 
 def get_bot_realized_profit():
     return load_bot_pnl()["total"]
+
+
+# How much the bot's own real-money lifetime P&L is allowed to fall from
+# its peak (not just from zero -- this also catches giving back a big
+# chunk of real profit, not only a net loss from scratch) before real
+# trading auto-halts. Paper trading is never affected by this -- it's a
+# real-money-only safety net.
+MAX_DRAWDOWN_DOLLARS = float(os.getenv("MAX_DRAWDOWN_DOLLARS", "10.00"))
+
+
+def get_drawdown():
+    """Dollars below the bot's own real-money peak realized P&L right now."""
+    data = load_bot_pnl()
+    return round(data.get("peak", 0.0) - data.get("total", 0.0), 4)
+
+
+def is_trading_halted():
+    return load_bot_pnl().get("halted", False)
+
+
+def halt_trading(reason):
+    """Returns True if this call is what actually flipped the halt (so the
+    caller knows to send exactly one alert, not one every cycle)."""
+    data = load_bot_pnl()
+    if data.get("halted"):
+        return False
+    data["halted"] = True
+    data["halted_reason"] = reason
+    data["halted_at"] = datetime.now().isoformat()
+    save_bot_pnl(data)
+    return True
+
+
+def resume_trading():
+    data = load_bot_pnl()
+    data["halted"] = False
+    data["halted_reason"] = None
+    data["resumed_at"] = datetime.now().isoformat()
+    save_bot_pnl(data)
+
+
+def check_drawdown_circuit_breaker(send_discord_fn, webhook):
+    """
+    Call this right after any REAL trade settles (win, loss, or early
+    profit-take). If the bot's real-money lifetime P&L has fallen
+    MAX_DRAWDOWN_DOLLARS or more below its own peak, halts ALL real
+    trading (sports + BTC) immediately -- paper trading keeps running
+    untouched. Sends exactly one Discord alert when the halt first
+    triggers; does not spam on every cycle after that. Re-enabling is a
+    manual action (resume_trading / POST /resume_trading) so a losing
+    streak can't quietly turn back on by itself.
+    """
+    dd = get_drawdown()
+    if dd >= MAX_DRAWDOWN_DOLLARS and halt_trading(f"drawdown ${dd:.2f} >= limit ${MAX_DRAWDOWN_DOLLARS:.2f}"):
+        send_discord_fn(
+            webhook,
+            f"\U0001F6D1 REAL TRADING AUTO-HALTED, sir. Drawdown from the bot's own peak "
+            f"real-money profit hit ${dd:.2f} (limit ${MAX_DRAWDOWN_DOLLARS:.2f}). "
+            f"All real-money trading is stopped -- paper trading keeps running normally "
+            f"so you can keep evaluating the strategy. Nothing resumes on its own; "
+            f"re-enable manually once you've reviewed what happened."
+        )
 
 
 def get_open_position_cost_basis(open_positions_dict, live_position_tickers):

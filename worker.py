@@ -602,6 +602,11 @@ def check_and_close_profitable_positions(client):
                 profit = (current_bid - pos["entry_price"]) * pos["count_fp"]
                 msg = f"{ticker} [{side_label}]: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, gain +{gain_pct:.1f}% (${profit:.2f})"
                 send_discord(DISCORD_WEBHOOK_BETS, _POSITION_CLOSED_PREFIX + msg)
+                # This early-exit P&L was never being recorded to the bot's
+                # own ledger before -- fixed, since the drawdown circuit
+                # breaker below needs an accurate lifetime P&L to work off.
+                ledger.record_bot_trade_result(ticker, profit, note=f"{side_label} early-profit exit")
+                ledger.check_drawdown_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
                 del positions[ticker]
                 save_open_positions(positions)
             except Exception as e:
@@ -658,6 +663,7 @@ def reconcile_settled_positions(client):
             f"[SETTLED] {ticker} [{side_label}]: {'WON' if won else 'LOST'} "
             f"(P&L: ${pnl:+.2f}, bot lifetime P&L: ${new_total:+.2f})"
         )
+        ledger.check_drawdown_circuit_breaker(send_discord, DISCORD_WEBHOOK_BETS)
 
         del positions[ticker]
         save_open_positions(positions)
@@ -896,7 +902,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
             distinct_games = len({r.get("event_id") for r in rows if r.get("event_id")})
             print(f"[{league}] got {len(rows)} odds rows across {distinct_games} distinct games")
 
-            if league in REAL_TRADING_LEAGUES:
+            if league in REAL_TRADING_LEAGUES and not ledger.is_trading_halted():
                 process_league_real_trading(client, league, seen_trades, rows)
 
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
@@ -916,7 +922,7 @@ def run_btc_and_resolution(client):
     decoupled from SPORTS_SCAN_INTERVAL_SECONDS."""
     try:
         print("[btc] checking momentum...")
-        if BTC_REAL_TRADING_ENABLED:
+        if BTC_REAL_TRADING_ENABLED and not ledger.is_trading_halted():
             process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
