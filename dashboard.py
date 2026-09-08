@@ -834,6 +834,64 @@ def resume_trading_route():
     return {"was_halted": was_halted, "now_halted": ledger.is_trading_halted()}
 
 
+@app.route("/debug_kalshi_match")
+def debug_kalshi_match_route():
+    """
+    Shows Kalshi's own market titles for a league's open events side by
+    side with today's SharpAPI away/home team names, so a match failure
+    (no_kalshi_match in the funnel) can be diagnosed -- is Kalshi's title
+    formatted differently than normalize_team_name expects, or is the
+    game just not listed on Kalshi at all. ?league=mlb (default).
+    """
+    import worker
+    from datetime import timezone
+
+    league = request.args.get("league", "mlb")
+    client = get_client()
+    rows = worker.fetch_sharpapi_odds(league)
+    kalshi_markets = worker.get_open_markets(client, worker.LEAGUE_SERIES[league])
+    kalshi_events = worker.group_kalshi_markets_by_event(kalshi_markets)
+
+    kalshi_side = {}
+    for event_ticker, markets in kalshi_events.items():
+        kalshi_side[event_ticker] = [
+            {"title": m.title, "normalized": worker.normalize_team_name(worker.short_name(m.title))}
+            for m in markets
+        ]
+
+    now = datetime.now(timezone.utc)
+    sharp_today = {}
+    seen_events = set()
+    for row in rows:
+        if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
+            continue
+        eid = row.get("event_id")
+        if eid in seen_events:
+            continue
+        start_str = row.get("event_start_time")
+        if not start_str:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if not (start_dt >= now and start_dt.date() == now.date()):
+            continue
+        seen_events.add(eid)
+        away, home = row.get("away_team"), row.get("home_team")
+        sharp_today[eid] = {
+            "away_team": away, "home_team": home,
+            "away_normalized": worker.normalize_team_name(away),
+            "home_normalized": worker.normalize_team_name(home),
+        }
+
+    return {
+        "league": league,
+        "sharpapi_today_games": sharp_today,
+        "kalshi_open_events": kalshi_side,
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
