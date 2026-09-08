@@ -441,7 +441,29 @@ def real_positions_route():
             entry["market_lookup_error"] = str(e)
         out.append(entry)
 
-    return {"open_positions_count": len(out), "positions": out}
+    orders_out = []
+    try:
+        raw_orders = client.portfolio.get_orders()
+        for o in raw_orders:
+            status = str(getattr(o, "status", "")).lower()
+            if status in ("resting", "pending", "open"):
+                orders_out.append({
+                    "ticker": getattr(o, "ticker", None),
+                    "side": str(getattr(o, "side", None)),
+                    "action": str(getattr(o, "action", None)),
+                    "status": status,
+                    "count": getattr(o, "remaining_count", getattr(o, "count", None)),
+                    "price": getattr(o, "yes_price_dollars", getattr(o, "price", None)),
+                })
+    except Exception as e:
+        orders_out = [{"error": f"couldn't fetch orders: {e}"}]
+
+    return {
+        "open_positions_count": len(out),
+        "positions": out,
+        "resting_orders_count": len([o for o in orders_out if "error" not in o]),
+        "resting_orders": orders_out,
+    }
 
 
 @app.route("/purge_pre_threshold_picks", methods=["GET", "POST"])
