@@ -650,6 +650,38 @@ def fund_crypto_shard_route():
     return result
 
 
+@app.route("/btc_price_paths")
+def btc_price_paths_route():
+    """
+    BTC paper trades with their recorded contract price history (see
+    paper_trading.track_btc_contract_prices) -- resolved trades show the
+    full path from entry to resolution, so a real early-exit percentage
+    can be picked from actual data instead of guessed at. Optional
+    ?status=won / ?status=lost / ?status=pending to filter; defaults to
+    resolved trades that actually have price history recorded (older
+    trades won't -- this started fresh, not retroactively).
+    """
+    import paper_trading as pt
+    data = pt.load_paper_trades()
+    btc = data.get("btc", [])
+    status_filter = request.args.get("status")
+    if status_filter:
+        btc = [p for p in btc if p.get("status") == status_filter]
+    else:
+        btc = [p for p in btc if p.get("status") in ("won", "lost") and p.get("contract_price_history")]
+    return {
+        "count": len(btc),
+        "trades": [
+            {
+                "ticker": p["ticker"], "status": p["status"], "predicted_direction": p["predicted_direction"],
+                "entry_price": p.get("entry_price"), "contract_price_history": p.get("contract_price_history", []),
+                "picked_at": p.get("picked_at"), "resolved_at": p.get("resolved_at"),
+            }
+            for p in btc
+        ],
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

@@ -222,13 +222,28 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
     already_picked = {p["event_id"] for p in paper_data["moneyline"]}
     new_picks = []
 
+    # Funnel counters -- added to see exactly WHERE games are getting
+    # filtered out (no Kalshi listing? wrong day? no real edge?) instead
+    # of just seeing "0 picks" with no way to tell why. Printed once per
+    # call, cheap, diagnostic only.
+    funnel = {
+        "distinct_events": len(by_event), "already_picked": 0, "no_two_sided_odds": 0,
+        "no_common_book": 0, "no_prob_data": 0, "not_today_or_started": 0,
+        "no_kalshi_match": 0, "no_qualifying_edge": 0, "picked": 0,
+    }
+
     for event_id, selections in by_event.items():
-        if event_id in already_picked or len(selections) != 2:
+        if event_id in already_picked:
+            funnel["already_picked"] += 1
+            continue
+        if len(selections) != 2:
+            funnel["no_two_sided_odds"] += 1
             continue
         sel_a, sel_b = list(selections)
         rows_a, rows_b = grouped[(event_id, sel_a)], grouped[(event_id, sel_b)]
         common_books = set(rows_a.keys()) & set(rows_b.keys())
         if not common_books:
+            funnel["no_common_book"] += 1
             continue
 
         probs_a, probs_b = [], []
@@ -241,6 +256,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             probs_b.append(pb / total)
 
         if not probs_a:
+            funnel["no_prob_data"] += 1
             continue
 
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
@@ -260,10 +276,12 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         now = datetime.now(timezone.utc)
         hours_until = (start_dt - now).total_seconds() / 3600
         if not (hours_until >= 0 and start_dt.date() == now.date()):
+            funnel["not_today_or_started"] += 1
             continue
 
         match_map = safe_match_fn(kalshi_events, away_team, home_team, individual=(league in {'ufc', 'atp'}))  # matches worker.py's INDIVIDUAL_ATHLETE_LEAGUES
         if not match_map:
+            funnel["no_kalshi_match"] += 1
             continue
 
         fair_probs = {sel_a: fair_a, sel_b: fair_b}
@@ -294,7 +312,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
                     best_pick = candidate
 
         if best_pick is None:
+            funnel["no_qualifying_edge"] += 1
             continue  # no genuine edge on either side -- skip, don't force a pick
+
+        funnel["picked"] += 1
 
         # "Too close to call" = it cleared the favorite bar but only just --
         # same band the learning step (maybe_adjust_moneyline_favorite_threshold)
@@ -330,6 +351,8 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
+
+    print(f"[{league}] moneyline funnel: {funnel}")
 
     if new_picks:
         save_paper_trades(paper_data)
@@ -548,6 +571,14 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
         "entry_price": entry_price,
         "picked_at": datetime.now().isoformat(),
         "status": "pending",
+        # Contract price over the life of the trade (NOT the BTC spot price
+        # above -- this is the Kalshi contract's own bid, i.e. what this
+        # pick could be sold for right now) -- filled in by
+        # track_btc_contract_prices() on every fast cycle. Recorded so a
+        # real early-exit threshold (cash out at some % gain instead of
+        # holding to full 15-min resolution) can eventually be picked from
+        # actual price paths instead of guessed at.
+        "contract_price_history": [],
     }
     paper_data["btc"].append(pick)
     save_paper_trades(paper_data)
@@ -566,6 +597,56 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
         )
         send_discord_fn(webhook, msg)
     return pick
+
+
+# Bound how much contract-price history one pending BTC pick keeps -- a
+# 15-minute market checked on a fast cycle won't need many more than this
+# before it resolves, so this can't grow unbounded.
+BTC_CONTRACT_HISTORY_MAX = 30
+
+
+def track_btc_contract_prices(client):
+    """
+    Runs on the fast cycle for every still-PENDING BTC paper pick: records
+    what that contract could be sold for RIGHT NOW (the bid on whichever
+    side this pick actually holds), building up a real price path for
+    each trade's lifetime. Entirely separate from the BTC SPOT price
+    history used for the momentum signal -- this is the Kalshi contract's
+    own price, which is what an early-exit decision would actually act on.
+
+    This is data collection only -- it does NOT close any paper position
+    early. Once enough trades have a real price path recorded, that data
+    can be used to pick an evidence-based early-exit threshold instead of
+    guessing at a percentage. Never raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        pending = [p for p in paper_data["btc"] if p["status"] == "pending"]
+        if not pending:
+            return
+
+        changed = False
+        now_iso = datetime.now().isoformat()
+        for pick in pending:
+            try:
+                market = client.get_market(pick["ticker"])
+            except Exception:
+                continue
+
+            bid_field = "yes_bid_dollars" if pick["predicted_direction"] == "up" else "no_bid_dollars"
+            bid = getattr(market, bid_field, None)
+            if not bid:
+                continue
+
+            pick.setdefault("contract_price_history", [])
+            pick["contract_price_history"].append({"at": now_iso, "price": float(bid)})
+            pick["contract_price_history"] = pick["contract_price_history"][-BTC_CONTRACT_HISTORY_MAX:]
+            changed = True
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] track_btc_contract_prices error: {e}")
 
 
 def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
