@@ -158,32 +158,49 @@ def remove_vig_two_way(prob_a, prob_b):
     return prob_a / total, prob_b / total
 
 
-# SharpAPI's response is a flat list of (event, selection, sportsbook) rows,
-# not one row per game -- a single busy day easily produces many rows per
-# game (2 selections x N sportsbooks). 200 was an arbitrary guess with no
-# pagination handling, so a day with more games than that would be silently
-# truncated -- no error, just missing games with nothing in the logs to show
-# it. Raised the ceiling and, more importantly, added a loud log line when
-# the response comes back exactly at the requested limit, since that's the
-# actual signal of truncation (the API gave us precisely as much as we asked
-# for, meaning there could easily be more we didn't see).
-SHARPAPI_FETCH_LIMIT = 1000
+# CONFIRMED (SharpAPI docs, docs.sharpapi.io/en/api-reference/overview/):
+# /api/v1/odds hard-caps every response at 200 rows per page REGARDLESS of
+# what "limit" is requested -- an earlier fix here that just raised the
+# limit param was a no-op for exactly that reason. The response is a flat
+# list of (event, selection, sportsbook) rows, not one row per game, so a
+# single busy day can easily produce more than 200 rows total (2 selections
+# x N sportsbooks x M games) -- meaning games sorted past the cutoff were
+# being silently dropped with nothing in the logs to show it. This is the
+# real, confirmed cause of "the bot didn't bet on a real game that was
+# happening" -- not a probability/edge filter being too strict, but some
+# games never even making it into the data the filters saw.
+#
+# Real fix: /odds supports cursor-based pagination (`pagination.next_cursor`
+# in the response, fed back as the `cursor` request param) specifically so
+# multi-page scans over live/changing odds don't drift -- looping until
+# `pagination.has_more` is false actually gets everything instead of
+# guessing at a big-enough single-page limit.
+SHARPAPI_MAX_PAGES = 10  # safety cap -- 10 x 200 = 2000 rows is far beyond any single day's slate for one league
 
 
 def fetch_sharpapi_odds(league):
-    resp = requests.get(
-        SHARPAPI_BASE,
-        params={"league": league, "market": "main", "limit": SHARPAPI_FETCH_LIMIT},
-        headers={"X-API-Key": SHARPAPI_KEY},
-    )
-    if resp.status_code != 200:
-        print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
-        return []
-    data = resp.json().get("data", [])
-    if len(data) >= SHARPAPI_FETCH_LIMIT:
-        print(f"[sharpapi] WARNING: {league} returned exactly the {SHARPAPI_FETCH_LIMIT}-row limit -- "
-              f"there may be MORE games this isn't seeing. Consider raising SHARPAPI_FETCH_LIMIT or adding pagination.")
-    return data
+    all_rows = []
+    cursor = None
+    for page_num in range(SHARPAPI_MAX_PAGES):
+        params = {"league": league, "market": "main", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
+        if resp.status_code != 200:
+            print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
+            break
+        body = resp.json()
+        all_rows.extend(body.get("data", []))
+        pagination = body.get("pagination", {})
+        if not pagination.get("has_more"):
+            break
+        cursor = pagination.get("next_cursor")
+        if not cursor:
+            print(f"[sharpapi] {league} WARNING: has_more=true but no next_cursor returned -- stopping early, some games may be missing")
+            break
+    else:
+        print(f"[sharpapi] {league} WARNING: hit the {SHARPAPI_MAX_PAGES}-page safety cap -- there may be even more games than that")
+    return all_rows
 
 
 def find_moneyline_edges(rows):
