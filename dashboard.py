@@ -751,6 +751,44 @@ def debug_selections_route():
     }
 
 
+@app.route("/run_moneyline_scan")
+def run_moneyline_scan_route():
+    """
+    Runs the REAL moneyline scan-and-pick logic for one league right now
+    (not a simulation of it -- this IS what the worker loop calls every
+    cycle) and returns the funnel counts plus any new picks made, so we
+    can see exactly why a league is or isn't picking without waiting for
+    the next 5-minute cycle or digging through Railway logs.
+    ?league=mlb (default)
+    """
+    import worker
+    import paper_trading as pt
+    import io
+    import contextlib
+
+    league = request.args.get("league", "mlb")
+    client = get_client()
+    rows = worker.fetch_sharpapi_odds(league)
+    kalshi_markets = worker.get_open_markets(client, worker.LEAGUE_SERIES[league])
+    kalshi_events = worker.group_kalshi_markets_by_event(kalshi_markets)
+
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        new_picks = pt.make_moneyline_paper_picks(
+            league, rows, kalshi_events, worker.safe_match_event, worker.send_discord, worker.DISCORD_WEBHOOK_UPDATES
+        )
+
+    printed = captured.getvalue().strip()
+    funnel_line = next((l for l in printed.splitlines() if "moneyline funnel" in l), printed)
+
+    return {
+        "league": league,
+        "funnel": funnel_line,
+        "new_picks_this_call": new_picks,
+        "kalshi_events_found": len(kalshi_events),
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
