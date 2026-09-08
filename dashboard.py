@@ -403,6 +403,47 @@ def purge_stale_moneyline_picks_route():
     return f"Kept {kept} near-term picks, removed {removed} stale ones.\n"
 
 
+@app.route("/real_positions")
+def real_positions_route():
+    """
+    Every currently open position on the REAL Kalshi account this bot's
+    API key belongs to -- including trades placed manually through
+    Kalshi's own site/app, not just ones the bot itself made (it's the
+    same account, so it's the same portfolio). Useful for checking "is
+    this specific game/market something I hold a position in right now,"
+    e.g. to compare a manual trade against what the bot's own filters
+    would have decided.
+    """
+    client = get_client()
+    try:
+        raw_positions = client.portfolio.get_positions()
+    except Exception as e:
+        return {"error": f"couldn't fetch positions: {e}"}, 502
+
+    out = []
+    for p in raw_positions:
+        count = float(getattr(p, "position_fp", 0) or 0)
+        if count == 0:
+            continue
+        ticker = getattr(p, "ticker", None)
+        entry = {
+            "ticker": ticker,
+            "position": count,
+            "side": "YES" if count > 0 else "NO",
+        }
+        try:
+            market = client.get_market(ticker)
+            entry["market_title"] = getattr(market, "title", None)
+            entry["yes_ask"] = getattr(market, "yes_ask_dollars", None)
+            entry["no_ask"] = getattr(market, "no_ask_dollars", None)
+            entry["status"] = str(getattr(market, "status", None))
+        except Exception as e:
+            entry["market_lookup_error"] = str(e)
+        out.append(entry)
+
+    return {"open_positions_count": len(out), "positions": out}
+
+
 @app.route("/purge_pre_threshold_picks", methods=["GET", "POST"])
 def purge_pre_threshold_picks_route():
     """
