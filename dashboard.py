@@ -692,6 +692,7 @@ def btc_price_paths_route():
                 "ticker": p["ticker"], "status": p["status"], "predicted_direction": p["predicted_direction"],
                 "entry_price": p.get("entry_price"), "contract_price_history": p.get("contract_price_history", []),
                 "picked_at": p.get("picked_at"), "resolved_at": p.get("resolved_at"),
+                "hypothetical_pnl": p.get("hypothetical_pnl"), "stake_dollars": p.get("stake_dollars"),
             }
             for p in btc
         ],
