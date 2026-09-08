@@ -725,6 +725,20 @@ def debug_selections_route():
                     "is_main_line": row.get("is_main_line"),
                 })
 
+    # Same check using the FIXED grouping (paper_trading._selection_side),
+    # which groups by each row's own away/home role instead of the raw
+    # selection string -- shows how many events the fix actually resolves.
+    import paper_trading as pt
+    fixed_by_event = dd(set)
+    for row in rows:
+        if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
+            continue
+        side = pt._selection_side(row.get("selection"), row.get("away_team"), row.get("home_team"))
+        if side is None:
+            continue
+        fixed_by_event[row.get("event_id")].add(side)
+    fixed_problem_events = {eid: sorted(sides) for eid, sides in fixed_by_event.items() if len(sides) != 2}
+
     return {
         "league": league,
         "total_rows": len(rows),
@@ -732,6 +746,8 @@ def debug_selections_route():
         "events_with_wrong_selection_count": len(problem_events),
         "sample_problem_events": dict(list(problem_events.items())[:10]),
         "raw_rows_for_one_problem_event": raw_rows_for_one_event,
+        "FIXED_events_with_wrong_side_count": len(fixed_problem_events),
+        "FIXED_sample_problem_events": dict(list(fixed_problem_events.items())[:10]),
     }
 
 
