@@ -918,6 +918,35 @@ def debug_find_team_route():
     return {"league": league, "team": team, "total_rows_scanned": len(rows), "matches": seen}
 
 
+@app.route("/sharpapi_fetch_health")
+def sharpapi_fetch_health_route():
+    """
+    Read-only: shows the recorded history of every fetch_sharpapi_odds
+    call (complete or not), WITHOUT triggering a new fetch itself -- so
+    this can be checked repeatedly to see how the bot's own unassisted
+    scan cycles are actually doing, without adding to the rate-limit
+    load being investigated. ?league=mlb to filter, ?since_minutes=30
+    to only show recent entries.
+    """
+    import worker
+    history = safe_read_json(worker.SHARPAPI_FETCH_HEALTH_FILE, [])
+    league = request.args.get("league", "").lower()
+    if league:
+        history = [h for h in history if h.get("league") == league]
+    since_minutes = request.args.get("since_minutes")
+    if since_minutes:
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=float(since_minutes))
+        history = [h for h in history if h.get("at") and datetime.fromisoformat(h["at"]) >= cutoff]
+    incomplete = [h for h in history if not h.get("complete")]
+    return {
+        "total_entries": len(history),
+        "incomplete_count": len(incomplete),
+        "incomplete_entries": incomplete,
+        "recent_entries": history[-20:],
+    }
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

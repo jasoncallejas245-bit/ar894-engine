@@ -279,6 +279,41 @@ def remove_vig_two_way(prob_a, prob_b):
 SHARPAPI_MAX_PAGES = 10  # safety cap -- 10 x 200 = 2000 rows is far beyond any single day's slate for one league
 
 
+SHARPAPI_FETCH_HEALTH_FILE = os.path.join(DATA_DIR, "sharpapi_fetch_health.json")
+SHARPAPI_FETCH_HEALTH_MAX_ENTRIES = 200
+
+
+def _record_fetch_health(league, pages_fetched, total_rows, complete, reason=None):
+    """
+    Every fetch_sharpapi_odds call logs one entry here -- not just to
+    console (which nobody reads unless something's already gone wrong),
+    but to a small persisted history so "is the bot's OWN unassisted
+    cycle silently getting incomplete data" can be answered by reading
+    real history instead of guessing or triggering more fetches. When a
+    fetch comes back incomplete, also fires exactly one Discord alert
+    (not one per retry) so this can't go unnoticed.
+    """
+    try:
+        history = safe_read_json(SHARPAPI_FETCH_HEALTH_FILE, [])
+        entry = {
+            "league": league, "at": datetime.now(timezone.utc).isoformat(),
+            "pages_fetched": pages_fetched, "total_rows": total_rows,
+            "complete": complete, "reason": reason,
+        }
+        history.append(entry)
+        history = history[-SHARPAPI_FETCH_HEALTH_MAX_ENTRIES:]
+        atomic_write_json(SHARPAPI_FETCH_HEALTH_FILE, history)
+        if not complete:
+            send_discord(
+                DISCORD_WEBHOOK_UPDATES,
+                f"\u26a0\ufe0f [sharpapi] {league} fetch came back INCOMPLETE this cycle "
+                f"({pages_fetched} pages, {total_rows} rows) -- {reason}. Some games may be "
+                f"missing from this cycle's picks; should self-correct on the next 5-min cycle."
+            )
+    except Exception as e:
+        print(f"[sharpapi] fetch health logging failed (non-fatal): {e}")
+
+
 def fetch_sharpapi_odds(league):
     """
     Paginates through SharpAPI's /odds endpoint until has_more is false.
@@ -293,10 +328,17 @@ def fetch_sharpapi_odds(league):
     Retrying 429s with the API's own retry-after/reset_at (same pattern
     already used for Discord's rate limit in send_discord) fixes that:
     each league's fetch now waits out the limit instead of giving up.
+
+    Every incomplete outcome (rate-limit exhaustion, missing cursor, hit
+    the page cap) is now recorded via _record_fetch_health instead of
+    only printed -- confirmed live (2026-09-08) that manual diagnostic
+    calls competing for the same 12/req-min budget can truncate a fetch
+    silently; this makes that visible instead of guessable.
     """
     all_rows = []
     cursor = None
     restarted_after_cursor_expiry = False
+    pages_fetched = 0
     for page_num in range(SHARPAPI_MAX_PAGES):
         params = {"league": league, "market": "main", "limit": 200}
         if cursor:
@@ -317,7 +359,8 @@ def fetch_sharpapi_odds(league):
             time.sleep(wait_s)
         else:
             print(f"[sharpapi] {league} still rate-limited after retries, stopping with what we have")
-            break
+            _record_fetch_health(league, pages_fetched, len(all_rows), complete=False, reason="rate-limited after 4 retries")
+            return all_rows
 
         if resp.status_code != 200:
             # Confirmed live: a long enough 429 wait (rate-limited page 5,
@@ -336,22 +379,28 @@ def fetch_sharpapi_odds(league):
                 print(f"[sharpapi] {league} cursor expired mid-fetch -- restarting pagination from page 1")
                 restarted_after_cursor_expiry = True
                 all_rows = []
+                pages_fetched = 0
                 cursor = None
                 continue
             print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
-            break
+            _record_fetch_health(league, pages_fetched, len(all_rows), complete=False, reason=f"HTTP {resp.status_code}")
+            return all_rows
 
+        pages_fetched += 1
         body = resp.json()
         all_rows.extend(body.get("data", []))
         pagination = body.get("pagination", {})
         if not pagination.get("has_more"):
-            break
+            _record_fetch_health(league, pages_fetched, len(all_rows), complete=True)
+            return all_rows
         cursor = pagination.get("next_cursor")
         if not cursor:
             print(f"[sharpapi] {league} WARNING: has_more=true but no next_cursor returned -- stopping early, some games may be missing")
-            break
+            _record_fetch_health(league, pages_fetched, len(all_rows), complete=False, reason="has_more=true but no next_cursor")
+            return all_rows
     else:
         print(f"[sharpapi] {league} WARNING: hit the {SHARPAPI_MAX_PAGES}-page safety cap -- there may be even more games than that")
+        _record_fetch_health(league, pages_fetched, len(all_rows), complete=False, reason=f"hit {SHARPAPI_MAX_PAGES}-page safety cap")
     return all_rows
 
 
