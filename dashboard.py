@@ -844,7 +844,7 @@ def debug_kalshi_match_route():
     game just not listed on Kalshi at all. ?league=mlb (default).
     """
     import worker
-    from datetime import timezone
+    from datetime import datetime, timezone
 
     league = request.args.get("league", "mlb")
     client = get_client()
