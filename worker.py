@@ -94,6 +94,97 @@ REAL_TRADING_LEAGUES = set()
 # record. Flip back on with BTC_REAL_TRADING_ENABLED=true once ready.
 BTC_REAL_TRADING_ENABLED = os.getenv("BTC_REAL_TRADING_ENABLED", "false").lower() == "true"
 
+# Kalshi split BTC/crypto markets onto their own "exchange shard" (shard
+# index 2) on 2026-08-24 -- collateral has to be pre-allocated on that
+# specific shard before an order can land there, separate from the
+# account's overall balance. Confirmed live: this account's balance was
+# 100% sitting on the default shard (0) with $0 on the crypto shard,
+# which would silently reject every real BTC order regardless of
+# strategy correctness. BTC_SHARD_INDEX / DEFAULT_SHARD_INDEX name the
+# two sides of that transfer; the actual top-up happens in
+# ensure_crypto_shard_funded() below, called right before any real BTC
+# order is placed.
+BTC_SHARD_INDEX = 2
+DEFAULT_SHARD_INDEX = 0
+# Keep a little extra buffer on the crypto shard beyond exactly what one
+# trade needs, so back-to-back trades don't re-trigger a transfer every
+# single cycle.
+SHARD_TRANSFER_BUFFER_DOLLARS = 2.0
+# Leave at least this much on the default shard -- never sweep it to $0.
+SHARD_MIN_RESERVE_DOLLARS = 1.0
+# Don't attempt more than one shard transfer this often, so a persistent
+# error (or Kalshi-side processing delay) can't turn into a transfer-spam
+# loop -- transfers are also documented as processed asynchronously, so
+# this gives one time to land before trying again.
+SHARD_TRANSFER_COOLDOWN_SECONDS = 300
+SHARD_TRANSFER_STATE_FILE = os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "shard_transfer_state.json")
+
+
+def ensure_crypto_shard_funded(client, needed_dollars):
+    """
+    Confirmed live (real $1 transfer, 2026-09-07) that Kalshi's Intra
+    Account Transfer endpoint works via client.post(path, data=body) --
+    pykalshi's post() doesn't take a `json` kwarg, but plain `data` (form-
+    encoded) is accepted and Kalshi processes it correctly. This checks
+    whether the crypto shard already holds enough for the trade about to
+    be placed, and tops it up from the default shard if not.
+
+    Returns True if the crypto shard already has (or now has) enough to
+    proceed. Returns False if funding isn't possible right now (not
+    enough on the default shard, in cooldown after a recent attempt, or
+    the balance/transfer call itself failed) -- callers should skip
+    placing the order this cycle rather than risk an order rejected for
+    an insufficient-shard-balance reason that has nothing to do with the
+    trading signal itself. Never raises.
+    """
+    try:
+        balance = client.get("/portfolio/balance")
+        breakdown = {row["exchange_index"]: float(row["balance"]) for row in balance.get("balance_breakdown", [])}
+    except Exception as e:
+        print(f"[shard-fund] balance check failed: {e}")
+        return False
+
+    crypto_balance = breakdown.get(BTC_SHARD_INDEX, 0.0)
+    if crypto_balance >= needed_dollars:
+        return True
+
+    state = safe_read_json(SHARD_TRANSFER_STATE_FILE, {})
+    last_attempt = state.get("last_attempt")
+    if last_attempt:
+        try:
+            last_dt = datetime.fromisoformat(last_attempt)
+            if (datetime.now(timezone.utc) - last_dt).total_seconds() < SHARD_TRANSFER_COOLDOWN_SECONDS:
+                return False  # recently tried -- give a pending transfer time to land
+        except Exception:
+            pass
+
+    default_balance = breakdown.get(DEFAULT_SHARD_INDEX, 0.0)
+    available_to_move = default_balance - SHARD_MIN_RESERVE_DOLLARS
+    shortfall = (needed_dollars + SHARD_TRANSFER_BUFFER_DOLLARS) - crypto_balance
+    transfer_amount = min(shortfall, available_to_move)
+
+    atomic_write_json(SHARD_TRANSFER_STATE_FILE, {"last_attempt": datetime.now(timezone.utc).isoformat()})
+
+    if transfer_amount <= 0:
+        print(f"[shard-fund] can't fund crypto shard -- default shard only has ${default_balance:.2f} "
+              f"(need to move ${shortfall:.2f}, min reserve ${SHARD_MIN_RESERVE_DOLLARS:.2f})")
+        return False
+
+    body = {
+        "source": "event_contract",
+        "destination": "event_contract",
+        "amount": round(transfer_amount * 10000),  # Kalshi wants centicents for this endpoint
+        "source_exchange_shard": DEFAULT_SHARD_INDEX,
+        "destination_exchange_shard": BTC_SHARD_INDEX,
+    }
+    try:
+        resp = client.post("/portfolio/intra_exchange_instance_transfer", data=body)
+        print(f"[shard-fund] moved ${transfer_amount:.2f} from shard {DEFAULT_SHARD_INDEX} to "
+              f"shard {BTC_SHARD_INDEX} (transfer_id={resp.get('transfer_id')})")
+    except Exception as e:
+        print(f"[shard-fund] transfer failed: {e}")
+    return False  # transfer is async -- skip this cycle's order either way, try again next cycle
+
 # Sports where Kalshi's short title is an individual's SURNAME, not a full
 # team name -- these need surname matching instead of exact-full-name
 # matching (which is correct for team sports but would match nobody here).
@@ -724,6 +815,18 @@ def process_btc_real_trading(client):
     available = ledger.get_available_budget(client, load_open_positions())
     stake_dollars = compute_stake_dollars(available)  # BTC may use the full available budget
     count_fp = max(1.0, stake_dollars / ask_price)
+
+    # SHARD FUNDING HOOK -- delete this block to remove the feature (see
+    # ensure_crypto_shard_funded above). BTC markets live on their own
+    # Kalshi exchange shard as of 2026-08-24, and money has to be
+    # pre-allocated there before an order can land -- this tops the
+    # crypto shard up from the default shard whenever it's running low,
+    # so real BTC trades don't silently reject for a funding/routing
+    # reason that has nothing to do with the trading signal. If a top-up
+    # was just initiated (transfers are async), this skips placing the
+    # order THIS cycle and tries again once the transfer's had time to land.
+    if not ensure_crypto_shard_funded(client, stake_dollars):
+        return
 
     msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
     if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title,
