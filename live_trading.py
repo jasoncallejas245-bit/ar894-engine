@@ -23,24 +23,50 @@ recovery) before shipping -- it correctly produces no pick.
 100% paper trading, same as every other strategy here. This does not
 touch real money and isn't wired into real trading anywhere.
 
-TO FULLY REMOVE THIS FEATURE: delete this file, remove the two lines
-that import/call it in worker.py (each marked "LIVE TRADING HOOK"), and
-delete live_game_tracker.json from the persistent volume. Nothing else
-in the codebase depends on it -- paper_trading.py's moneyline bankroll
-and resolution logic are reused as-is (live picks are tagged
-source="live" in the same paper_trades.json list), so removing this
-file does not touch or corrupt any existing pregame paper-trading data.
+This file also carries a second, independent feature: a tie-score
+alert (check_tie_alerts, near the bottom) that watches the same tracked
+games via ESPN's free scoreboard and pings Discord the moment a score
+ties, so a bet can be placed BY HAND right then -- since this bot does
+not place real in-game bets itself. It shares game-discovery with the
+paper-live-betting strategy above but is switched independently via
+TIE_ALERTS_ENABLED, so either half of this file can be turned off
+without touching the other.
+
+TO FULLY REMOVE THE LIVE-BETTING STRATEGY ONLY: set
+LIVE_TRADING_ENABLED=false (env var, no code change, no redeploy
+needed to just pause it) -- or, to remove it in code, delete
+monitor_live_games and its "LIVE TRADING HOOK" call in worker.py.
+
+TO FULLY REMOVE THE TIE ALERT ONLY: set TIE_ALERTS_ENABLED=false -- or
+delete check_tie_alerts and its "TIE ALERT HOOK" call in worker.py.
+
+TO REMOVE BOTH / THIS WHOLE FILE: delete this file, remove all lines
+marked "LIVE TRADING HOOK" / "TIE ALERT HOOK" in worker.py, and delete
+live_game_tracker.json from the persistent volume. Nothing else in the
+codebase depends on it -- paper_trading.py's moneyline bankroll and
+resolution logic are reused as-is (live picks are tagged source="live"
+in the same paper_trades.json list), so removing this file does not
+touch or corrupt any existing pregame paper-trading data.
 """
 import os
 from datetime import datetime, timezone
 
 from state_io import atomic_write_json, safe_read_json
 import paper_trading as pt
+import context_data
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 TRACKER_FILE = os.path.join(DATA_DIR, "live_game_tracker.json")
 
 LIVE_TRADING_ENABLED = os.getenv("LIVE_TRADING_ENABLED", "true").lower() == "true"
+
+# Separate on/off switch for the tie-score alert (below) -- independent
+# of LIVE_TRADING_ENABLED so one can be turned off without the other.
+TIE_ALERTS_ENABLED = os.getenv("TIE_ALERTS_ENABLED", "true").lower() == "true"
+
+# Leagues where "tied score" is a meaningful, ESPN-trackable concept.
+# UFC/ATP are individual-athlete sports with no team score to tie.
+TIE_ALERT_LEAGUES = {"nfl", "ncaaf", "mlb", "wnba"}
 
 # How long after kickoff to keep watching a game before assuming it's over
 # and dropping it -- generous enough for long games (MLB extra innings,
@@ -75,7 +101,7 @@ def track_live_candidates(league, sharpapi_rows, kalshi_events, safe_match_fn):
     time has already passed (i.e. it's presumably being played right
     now) that isn't already being tracked. Never raises.
     """
-    if not LIVE_TRADING_ENABLED:
+    if not (LIVE_TRADING_ENABLED or TIE_ALERTS_ENABLED):
         return
     try:
         data = _load()
@@ -127,6 +153,7 @@ def track_live_candidates(league, sharpapi_rows, kalshi_events, safe_match_fn):
                 "first_seen_at": now.isoformat(),
                 "price_history": [],
                 "decided": False,
+                "was_tied": False,
             }
             changed = True
 
@@ -244,3 +271,66 @@ def monitor_live_games(client, send_discord_fn, webhook):
             _save(data)
     except Exception as e:
         print(f"[live_trading] monitor_live_games error: {e}")
+
+
+def check_tie_alerts(send_discord_fn, webhook):
+    """
+    Called on the fast (BTC-speed) cycle -- for every tracked in-progress
+    game in a league where a "tied score" makes sense (NFL/NCAAF/MLB/
+    WNBA; UFC/ATP have no team score at all), checks ESPN's free public
+    scoreboard and sends a Discord alert the FIRST time the score becomes
+    tied, so a manual bet can be placed by hand right at that moment --
+    this bot doesn't place real in-game bets itself (see monitor_live_games
+    above for the separate, paper-only sustained-move strategy).
+
+    Fetches each league's scoreboard at most ONCE per call (not once per
+    game) and reuses it for every tracked game in that league. Re-arms
+    per game: if the score un-ties and later ties again (common in
+    baseball), a fresh alert goes out rather than staying silent forever
+    after the first tie. Never raises -- a bad ESPN match or a flaky
+    fetch just means no alert that cycle, never a crash.
+    """
+    if not TIE_ALERTS_ENABLED:
+        return
+    try:
+        data = _load()
+        changed = False
+        scoreboard_cache = {}
+
+        for key, game in list(data["games"].items()):
+            league = game.get("league")
+            if league not in TIE_ALERT_LEAGUES:
+                continue
+
+            if league not in scoreboard_cache:
+                scoreboard_cache[league] = context_data.get_scoreboard(league)
+
+            score = context_data.get_live_score_from_scoreboard(
+                scoreboard_cache[league], league, game["away_team"], game["home_team"]
+            )
+            if not score or score.get("state") != "in":
+                continue
+
+            away_score, home_score = score.get("away_score"), score.get("home_score")
+            if away_score is None or home_score is None:
+                continue
+
+            is_tied = away_score == home_score
+            was_tied = game.get("was_tied", False)
+
+            if is_tied and not was_tied:
+                send_discord_fn(
+                    webhook,
+                    f"[TIE] {game['away_team']} {away_score} - {home_score} {game['home_team']} "
+                    f"just tied up ({game['league'].upper()}) -- good spot to place a manual bet if you want one."
+                )
+                game["was_tied"] = True
+                changed = True
+            elif not is_tied and was_tied:
+                game["was_tied"] = False
+                changed = True
+
+        if changed:
+            _save(data)
+    except Exception as e:
+        print(f"[live_trading] check_tie_alerts error: {e}")

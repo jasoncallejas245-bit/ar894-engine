@@ -806,6 +806,7 @@ def run_btc_and_resolution(client):
             process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
         live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
+        live_trading.check_tie_alerts(send_discord, DISCORD_WEBHOOK_BETS)  # TIE ALERT HOOK -- delete this line to remove the feature
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:

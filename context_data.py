@@ -28,8 +28,10 @@ ESPN_LEAGUE_PATHS = {
     "nfl": "football/nfl",
     "ncaaf": "football/college-football",
     "mlb": "baseball/mlb",
+    "wnba": "basketball/wnba",
     # UFC/ATP are individual-athlete sports with no team-injury-report
-    # concept on ESPN's team endpoints -- deliberately not included here.
+    # (or "tied score") concept on ESPN's team/scoreboard endpoints --
+    # deliberately not included here.
 }
 
 # ESPN's "core" API (a separate product from the "site" API above) is what
@@ -109,6 +111,60 @@ def _find_team_id(league, team_name):
     for key, team_id in mapping.items():
         if key and (key in norm or norm in key):
             return team_id
+    return None
+
+
+def get_scoreboard(league):
+    """
+    Raw ESPN scoreboard events for a league right now (today's games,
+    whatever state they're in -- pre/in/post). Best-effort like
+    everything else here: [] on any failure, never raises. Callers
+    fetch this ONCE per league per check and match multiple tracked
+    games against the same result, rather than one request per game.
+    """
+    path = ESPN_LEAGUE_PATHS.get(league)
+    if not path:
+        return []
+    try:
+        data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard")
+        return data.get("events", [])
+    except Exception as e:
+        print(f"[context_data] {league} scoreboard fetch failed: {e}")
+        return []
+
+
+def get_live_score_from_scoreboard(events, league, away_team, home_team):
+    """
+    Matches a specific game (by team name, same fuzzy matching used for
+    injuries/venue) against an already-fetched scoreboard, and returns
+    {"state": "pre"|"in"|"post", "away_score": int, "home_score": int}
+    if found and both scores are readable, else None. Matches by ESPN's
+    own numeric team ID (not name strings) once each team is resolved,
+    since that's exact where name matching could be ambiguous.
+    """
+    away_id = _find_team_id(league, away_team)
+    home_id = _find_team_id(league, home_team)
+    if not away_id or not home_id:
+        return None
+    try:
+        for event in events:
+            comps = (event.get("competitions") or [{}])[0].get("competitors", [])
+            ids = {c.get("team", {}).get("id") for c in comps}
+            if away_id not in ids or home_id not in ids:
+                continue
+            state = ((event.get("status") or {}).get("type") or {}).get("state")
+            scores = {}
+            for c in comps:
+                tid = c.get("team", {}).get("id")
+                try:
+                    scores[tid] = int(c.get("score"))
+                except (TypeError, ValueError):
+                    continue
+            if away_id not in scores or home_id not in scores:
+                return None
+            return {"state": state, "away_score": scores[away_id], "home_score": scores[home_id]}
+    except Exception as e:
+        print(f"[context_data] {league} scoreboard match failed: {e}")
     return None
 
 
