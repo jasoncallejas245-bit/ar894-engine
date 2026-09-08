@@ -238,6 +238,18 @@ def _selection_side(selection, away_team, home_team):
     return None
 
 
+def _longest_names_row(rows):
+    """
+    Picks whichever row (from any iterable of sportsbook rows) has the
+    longest combined away_team + home_team text -- prefers the
+    unabbreviated spelling (FanDuel's "Boston Red Sox") over an
+    abbreviated one (DraftKings' "BOS Red Sox") without a hardcoded
+    per-team abbreviation table. Matters because away_team/home_team
+    feed straight into Kalshi matching.
+    """
+    return max(rows, key=lambda r: len(r.get("away_team") or "") + len(r.get("home_team") or ""))
+
+
 def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
@@ -308,8 +320,13 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             continue
 
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
-        best_row_a = list(rows_a.values())[0]
-        away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
+        # Pick ONE row (from either side, whichever book has the longest
+        # combined away+home text) so away_team/home_team come from the
+        # same book consistently, rather than potentially mixing an
+        # abbreviated field from one book with a full-name field from
+        # another.
+        best_row = _longest_names_row(list(rows_a.values()) + list(rows_b.values()))
+        away_team, home_team = best_row.get("away_team"), best_row.get("home_team")
         team_by_side = {"away": away_team, "home": home_team}
         fair_by_side = {"away": fair_a if sel_a == "away" else fair_b, "home": fair_b if sel_a == "away" else fair_a}
 

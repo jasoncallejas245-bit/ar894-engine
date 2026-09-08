@@ -355,25 +355,41 @@ def fetch_sharpapi_odds(league):
     return all_rows
 
 
+def _longest_names_row(rows):
+    """
+    Picks whichever row (from any iterable of sportsbook rows) has the
+    longest combined away_team + home_team text -- a cheap, reliable way
+    to prefer the unabbreviated spelling (e.g. FanDuel's "Boston Red
+    Sox") over an abbreviated one (e.g. DraftKings' "BOS Red Sox")
+    without hardcoding a per-team abbreviation table. Matters because
+    away_team/home_team feed directly into Kalshi matching, which needs
+    the real spelling.
+    """
+    return max(rows, key=lambda r: len(r.get("away_team") or "") + len(r.get("home_team") or ""))
+
+
 def find_moneyline_edges(rows):
     grouped = defaultdict(dict)
     for row in rows:
         if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
             continue
-        key = (row.get("event_id"), row.get("selection"))
+        side = pt._selection_side(row.get("selection"), row.get("away_team"), row.get("home_team"))
+        if side is None:
+            continue  # can't tell which team this selection refers to -- skip rather than guess
+        key = (row.get("event_id"), side)
         grouped[key][row.get("sportsbook")] = row
 
     by_event = defaultdict(set)
-    for (event_id, selection) in grouped.keys():
-        by_event[event_id].add(selection)
+    for (event_id, side) in grouped.keys():
+        by_event[event_id].add(side)
 
     edges = []
-    for event_id, selections in by_event.items():
-        selections = list(selections)
-        if len(selections) != 2:
+    for event_id, sides in by_event.items():
+        sides = list(sides)
+        if len(sides) != 2:
             continue
-        sel_a, sel_b = selections
-        rows_a, rows_b = grouped[(event_id, sel_a)], grouped[(event_id, sel_b)]
+        side_a, side_b = sides
+        rows_a, rows_b = grouped[(event_id, side_a)], grouped[(event_id, side_b)]
         common_books = set(rows_a.keys()) & set(rows_b.keys())
         if len(common_books) < 2:
             continue
@@ -395,12 +411,20 @@ def find_moneyline_edges(rows):
         fair_a = sum(novig_a.values()) / len(novig_a)
         fair_b = sum(novig_b.values()) / len(novig_b)
 
-        for selection, fair_prob, rows_dict in [(sel_a, fair_a, rows_a), (sel_b, fair_b, rows_b)]:
-            best_row = list(rows_dict.values())[0]
+        # One row, from either side, whichever book has the longest combined
+        # away+home text -- keeps away_team/home_team consistent (both from
+        # the same book) rather than potentially mixing an abbreviated field
+        # from one book with a full-name field from another.
+        best_row = _longest_names_row(list(rows_a.values()) + list(rows_b.values()))
+        away_team, home_team = best_row.get("away_team"), best_row.get("home_team")
+        team_a = away_team if side_a == "away" else home_team
+        team_b = away_team if side_b == "away" else home_team
+
+        for selection, fair_prob in [(team_a, fair_a), (team_b, fair_b)]:
             edges.append({
                 "event_id": event_id,
-                "away_team": best_row.get("away_team"),
-                "home_team": best_row.get("home_team"),
+                "away_team": away_team,
+                "home_team": home_team,
                 "event_start_time": best_row.get("event_start_time"),
                 "selection": selection,
                 "fair_prob": fair_prob,
@@ -446,18 +470,43 @@ def surname(full_name):
     return parts[-1].upper() if parts else ""
 
 
+def reduced_name_candidates(normalized_full):
+    """
+    Kalshi sometimes titles an MLB market by city alone ('Cleveland wins'),
+    or -- when two teams share a city, like the LA Angels/Dodgers, NY
+    Mets/Yankees, or Chicago Cubs/White Sox -- by city plus the initials
+    of the mascot's word(s) ('Los Angeles A', 'Los Angeles D', 'Chicago
+    WS'). Confirmed live via /debug_kalshi_match. Generates every
+    "leading words + initials of the remaining word(s)" reduction of a
+    full team name so those can be checked for an EXACT match against
+    Kalshi's title, without hardcoding a city/mascot table per team --
+    still exact-equality only, never substring/containment, so it can't
+    silently pair the wrong game.
+    """
+    words = normalized_full.split()
+    candidates = {normalized_full}
+    for split in range(1, len(words)):
+        prefix = " ".join(words[:split])
+        candidates.add(prefix)  # mascot fully dropped -- e.g. "Cleveland Guardians" -> "Cleveland"
+        initials = "".join(w[0] for w in words[split:] if w)
+        candidates.add(f"{prefix} {initials}".strip())  # shared-city disambiguation -- see docstring
+    return candidates
+
+
 def safe_match_event(kalshi_events, away_team, home_team, individual=False):
     """
-    Matches on EXACT normalized equality only -- team name for team sports,
+    Matches on EXACT normalized equality only -- team name (or one of its
+    known reductions -- see reduced_name_candidates) for team sports,
     surname for individual-athlete sports. Never substring/containment,
     which can silently pair the wrong real-world game or person. If nothing
     matches exactly, we skip the trade instead of guessing.
     """
     if individual:
-        away_key, home_key = surname(away_team), surname(home_team)
+        away_candidates, home_candidates = {surname(away_team)}, {surname(home_team)}
         get_key = lambda title: surname(short_name(title))
     else:
-        away_key, home_key = normalize_team_name(away_team), normalize_team_name(home_team)
+        away_candidates = reduced_name_candidates(normalize_team_name(away_team))
+        home_candidates = reduced_name_candidates(normalize_team_name(home_team))
         get_key = lambda title: normalize_team_name(short_name(title))
 
     for event_ticker, markets in kalshi_events.items():
@@ -466,9 +515,9 @@ def safe_match_event(kalshi_events, away_team, home_team, individual=False):
         m1, m2 = markets
         s1_key, s2_key = get_key(m1.title), get_key(m2.title)
 
-        if s1_key == away_key and s2_key == home_key:
+        if s1_key in away_candidates and s2_key in home_candidates:
             return {away_team: m1, home_team: m2}
-        if s1_key == home_key and s2_key == away_key:
+        if s1_key in home_candidates and s2_key in away_candidates:
             return {home_team: m1, away_team: m2}
 
     return None
