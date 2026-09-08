@@ -892,6 +892,32 @@ def debug_kalshi_match_route():
     }
 
 
+@app.route("/debug_find_team")
+def debug_find_team_route():
+    """
+    Searches ALL fetched SharpAPI rows (not just today's) for a team name
+    substring, case-insensitive -- to answer "does SharpAPI even carry
+    this game" separately from "did our matching logic fail on it".
+    ?league=mlb&team=dodgers
+    """
+    import worker
+    league = request.args.get("league", "mlb")
+    team = request.args.get("team", "").lower()
+    rows = worker.fetch_sharpapi_odds(league)
+    seen = {}
+    for row in rows:
+        away, home = row.get("away_team") or "", row.get("home_team") or ""
+        if team in away.lower() or team in home.lower():
+            eid = row.get("event_id")
+            seen[eid] = {
+                "away_team": away, "home_team": home,
+                "event_start_time": row.get("event_start_time"),
+                "sportsbook": row.get("sportsbook"), "market_type": row.get("market_type"),
+                "is_main_line": row.get("is_main_line"),
+            }
+    return {"league": league, "team": team, "total_rows_scanned": len(rows), "matches": seen}
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
