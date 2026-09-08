@@ -8,6 +8,7 @@ import requests
 from pykalshi import KalshiClient, Action, Side, MarketStatus
 
 import paper_trading as pt
+import live_trading  # LIVE TRADING HOOK -- delete this import to remove the feature
 import ledger
 from state_io import atomic_write_json, safe_read_json
 
@@ -787,6 +788,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
             pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
+            live_trading.track_live_candidates(league, rows, kalshi_events, safe_match_event)  # LIVE TRADING HOOK -- delete this line to remove the feature
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
@@ -803,6 +805,7 @@ def run_btc_and_resolution(client):
         if BTC_REAL_TRADING_ENABLED:
             process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
+        live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:

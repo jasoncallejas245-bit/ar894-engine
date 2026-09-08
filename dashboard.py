@@ -403,6 +403,27 @@ def purge_stale_moneyline_picks_route():
     return f"Kept {kept} near-term picks, removed {removed} stale ones.\n"
 
 
+@app.route("/live_picks")
+def live_picks_route():
+    """
+    Live/in-game paper picks only (source="live"), plus the raw tracker
+    state (every game currently being watched, with its price history)
+    so the live strategy's behavior can be checked directly -- e.g.
+    confirming it did NOT fire during a price swing that later reversed.
+    """
+    import paper_trading as pt
+    import live_trading
+    data = pt.load_paper_trades()
+    live_picks = [p for p in data.get("moneyline", []) if p.get("source") == "live"]
+    tracker = live_trading._load()
+    return {
+        "live_trading_enabled": live_trading.LIVE_TRADING_ENABLED,
+        "live_picks_count": len(live_picks),
+        "live_picks": list(reversed(live_picks)),
+        "currently_tracked_games": tracker.get("games", {}),
+    }
+
+
 @app.route("/real_positions")
 def real_positions_route():
     """

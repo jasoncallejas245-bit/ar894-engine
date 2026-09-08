@@ -144,6 +144,55 @@ def purge_stale_moneyline_picks(client, near_term_hours=None):
     return len(kept), removed
 
 
+def record_live_moneyline_pick(league, event_id, away_team, home_team, picked_team, kalshi_ticker, entry_price, opening_price):
+    """
+    Records a single live/in-game pick from live_trading.py, reusing the
+    exact same moneyline paper-trading store, bankroll, and resolution
+    logic (resolve_moneyline_paper_trades) as pregame picks -- no separate
+    tracking needed. Tagged source="live" so it's distinguishable from
+    pregame picks in /moneyline_picks and can be filtered/removed on its
+    own if the live strategy doesn't pan out, without touching pregame
+    data at all.
+
+    Shares the SAME already_picked (event_id) dedup as pregame picks --
+    a game already paper-picked pregame is never ALSO picked live, and
+    vice versa, so one game never gets double exposure across the two
+    strategies. Returns True if a pick was recorded, False if this event
+    was already picked (by either strategy) or the pick failed to save.
+    Never raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        already_picked = {p["event_id"] for p in paper_data["moneyline"]}
+        if event_id in already_picked:
+            return False
+
+        pick = {
+            "league": league.upper(),
+            "event_id": event_id,
+            "away_team": away_team,
+            "home_team": home_team,
+            "picked_team": picked_team,
+            "side": "YES",
+            "market_probability": None,  # no fair-probability model for live -- this trades price action, not a mispricing vs. a known fair value
+            "edge_pct": None,
+            "kalshi_ticker": kalshi_ticker,
+            "entry_price": entry_price,
+            "opening_price_when_tracked": opening_price,
+            "picked_at": datetime.now().isoformat(),
+            "status": "pending",
+            "is_too_close": False,
+            "context_note": None,
+            "source": "live",
+        }
+        paper_data["moneyline"].append(pick)
+        save_paper_trades(paper_data)
+        return True
+    except Exception as e:
+        print(f"[paper_trading] record_live_moneyline_pick failed: {e}")
+        return False
+
+
 def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
@@ -277,6 +326,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "status": "pending",
             "is_too_close": is_too_close,
             "context_note": context_note,
+            "source": "pregame",
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
