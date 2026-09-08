@@ -710,12 +710,28 @@ def debug_selections_route():
         eid: {"selections": sorted(v["selections"]), "books": sorted(v["books"]), "teams": v["teams"]}
         for eid, v in by_event.items() if len(v["selections"]) != 2
     }
+
+    # Raw per-row dump for ONE problem event, to see whether away_team/
+    # home_team (not just "selection") also vary by sportsbook, or if
+    # only "selection" is inconsistent -- decides how the fix has to work.
+    raw_rows_for_one_event = []
+    if problem_events:
+        target_event = next(iter(problem_events))
+        for row in rows:
+            if row.get("event_id") == target_event and row.get("market_type") == "moneyline":
+                raw_rows_for_one_event.append({
+                    "sportsbook": row.get("sportsbook"), "selection": row.get("selection"),
+                    "away_team": row.get("away_team"), "home_team": row.get("home_team"),
+                    "is_main_line": row.get("is_main_line"),
+                })
+
     return {
         "league": league,
         "total_rows": len(rows),
         "total_distinct_events": len(by_event),
         "events_with_wrong_selection_count": len(problem_events),
         "sample_problem_events": dict(list(problem_events.items())[:10]),
+        "raw_rows_for_one_problem_event": raw_rows_for_one_event,
     }
 
 
