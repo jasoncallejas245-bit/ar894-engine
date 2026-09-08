@@ -598,6 +598,58 @@ def shard_balance_route():
     return result
 
 
+@app.route("/fund_crypto_shard", methods=["POST"])
+def fund_crypto_shard_route():
+    """
+    TEST/DIAGNOSTIC ONLY for now -- not wired into the trading loop yet.
+    Moves real money from the default exchange shard (0) to the crypto
+    shard (2) via Kalshi's Intra Account Transfer endpoint, so this can
+    be validated with a small real transfer BEFORE any automatic
+    version of this gets built into process_btc_real_trading. POST only
+    (never GET) so a browser preview or crawler can't trigger it by
+    accident. Trigger with:
+    curl -X POST https://<your-app>.up.railway.app/fund_crypto_shard -d amount=1.00
+
+    "amount" is dollars (defaults to 1.00 -- deliberately tiny for the
+    first real test). Kalshi's transfer endpoint takes the amount in
+    CENTICENTS (1/100 of a cent -- i.e. dollars * 10000), per their own
+    API docs, which is a different unit than get_balance()'s cents.
+    """
+    amount_dollars = float(request.form.get("amount", request.args.get("amount", 1.00)))
+    client = get_client()
+    result = {"requested_amount_dollars": amount_dollars}
+
+    try:
+        before = client.get("/portfolio/balance")
+        result["balance_before"] = before.get("balance_breakdown")
+    except Exception as e:
+        result["balance_before_error"] = str(e)
+
+    body = {
+        "source": "event_contract",
+        "destination": "event_contract",
+        "amount": round(amount_dollars * 10000),
+        "source_exchange_shard": 0,
+        "destination_exchange_shard": 2,
+    }
+    result["request_body"] = body
+
+    for method_name, call in [
+        ("post_json", lambda: client.post("/portfolio/intra_exchange_instance_transfer", json=body)),
+        ("post_data", lambda: client.post("/portfolio/intra_exchange_instance_transfer", data=body)),
+        ("post_positional", lambda: client.post("/portfolio/intra_exchange_instance_transfer", body)),
+    ]:
+        try:
+            resp = call()
+            result["transfer_response"] = resp
+            result["transfer_method_used"] = method_name
+            break
+        except Exception as e:
+            result[f"{method_name}_error"] = str(e)
+
+    return result
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
