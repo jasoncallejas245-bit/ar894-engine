@@ -1,7 +1,7 @@
 import os
 import time
 import tempfile
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from collections import defaultdict
 
 import requests
@@ -179,16 +179,48 @@ SHARPAPI_MAX_PAGES = 10  # safety cap -- 10 x 200 = 2000 rows is far beyond any 
 
 
 def fetch_sharpapi_odds(league):
+    """
+    Paginates through SharpAPI's /odds endpoint until has_more is false.
+
+    Discovered live (2026-09-07, right after pagination was first added):
+    fetching multiple pages for one big league (NFL/NCAAF/MLB routinely
+    need 4-5 pages now that they're not silently truncated at 200 rows)
+    can burn through SharpAPI's per-minute rate limit (confirmed live:
+    "limit":12 requests/min) before the LATER leagues in the same scan
+    cycle (UFC/ATP/WNBA) even get their first request in -- they came back
+    429'd with 0 rows, a new failure mode this pagination fix introduced.
+    Retrying 429s with the API's own retry-after/reset_at (same pattern
+    already used for Discord's rate limit in send_discord) fixes that:
+    each league's fetch now waits out the limit instead of giving up.
+    """
     all_rows = []
     cursor = None
     for page_num in range(SHARPAPI_MAX_PAGES):
         params = {"league": league, "market": "main", "limit": 200}
         if cursor:
             params["cursor"] = cursor
-        resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
+
+        for attempt in range(4):
+            resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
+            if resp.status_code != 429:
+                break
+            try:
+                err = resp.json().get("error", {})
+                reset_at = err.get("reset_at")
+                wait_s = (datetime.fromisoformat(reset_at.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds() if reset_at else 5
+            except Exception:
+                wait_s = 5
+            wait_s = max(0.5, min(wait_s, 30)) + 0.5  # sane floor/ceiling plus a small safety margin
+            print(f"[sharpapi] {league} rate-limited (page {page_num + 1}), waiting {wait_s:.1f}s")
+            time.sleep(wait_s)
+        else:
+            print(f"[sharpapi] {league} still rate-limited after retries, stopping with what we have")
+            break
+
         if resp.status_code != 200:
             print(f"[sharpapi] {league} failed: {resp.status_code} {resp.text[:200]}")
             break
+
         body = resp.json()
         all_rows.extend(body.get("data", []))
         pagination = body.get("pagination", {})
