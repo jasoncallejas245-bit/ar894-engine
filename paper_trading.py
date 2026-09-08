@@ -333,7 +333,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         # Same-day only -- mirrors real trading: the event must start later today
         # (UTC), not just within some rolling hour window that could roll into
         # tomorrow. Otherwise picks pile up for games that can't resolve soon.
-        start_str = best_row_a.get("event_start_time")
+        start_str = best_row.get("event_start_time")
         if not start_str:
             continue
         try:
