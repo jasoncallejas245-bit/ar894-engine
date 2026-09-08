@@ -193,6 +193,33 @@ def record_live_moneyline_pick(league, event_id, away_team, home_team, picked_te
         return False
 
 
+import math
+
+def _kalshi_taker_fee_dollars_local(price_dollars, contracts=1.0):
+    """
+    Kalshi's real taker-order fee -- see worker.kalshi_taker_fee_dollars
+    for the full explanation of where this formula comes from and why it
+    matters. Kept as a local duplicate (not imported) to avoid a circular
+    import, same pattern as the other _local helpers in this file.
+    fee = round_up(0.07 * C * P * (1-P))
+    """
+    raw = 0.07 * contracts * price_dollars * (1 - price_dollars)
+    return math.ceil(raw * 10000) / 10000.0
+
+
+MIN_NET_EDGE_AFTER_FEE_PCT = float(os.getenv("MIN_NET_EDGE_AFTER_FEE_PCT", "1.0"))
+
+
+def _clears_fee_adjusted_edge_local(edge_pct, price_dollars, min_edge_pct):
+    """Same logic as worker.clears_fee_adjusted_edge -- local copy to avoid
+    a circular import. True if edge_pct clears the raw threshold AND still
+    leaves MIN_NET_EDGE_AFTER_FEE_PCT of edge after Kalshi's real fee."""
+    if edge_pct < min_edge_pct:
+        return False
+    fee_pct = _kalshi_taker_fee_dollars_local(price_dollars) * 100
+    return (edge_pct - fee_pct) >= MIN_NET_EDGE_AFTER_FEE_PCT
+
+
 def _normalize_team_name_local(name):
     """
     Same normalization worker.py uses for Kalshi matching -- kept local
@@ -372,7 +399,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             fair_prob = fair_probs[selection]
             edge_pct = (fair_prob - yes_price) * 100
 
-            if edge_pct >= min_edge_pct and fair_prob >= favorite_min_prob:
+            if _clears_fee_adjusted_edge_local(edge_pct, yes_price, min_edge_pct) and fair_prob >= favorite_min_prob:
                 candidate = {
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
@@ -475,7 +502,12 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
             contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
             pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
             pick["contracts"] = contracts
-            pick["hypothetical_pnl"] = round((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts, 4)
+            # Kalshi's real taker fee, paid on entry regardless of win/loss --
+            # never subtracted before (2026-09-08), which meant this
+            # "hypothetical P&L" was overstating true profitability on
+            # every single resolved trade. See _kalshi_taker_fee_dollars_local.
+            entry_fee = _kalshi_taker_fee_dollars_local(pick["entry_price"], contracts)
+            pick["hypothetical_pnl"] = round(((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts) - entry_fee, 4)
         else:
             pick["hypothetical_pnl"] = None
 
@@ -619,7 +651,7 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     fair_prob_estimate = get_btc_fair_prob_estimate()
     if fair_prob_estimate is not None and entry_price is not None:
         edge_pct = (fair_prob_estimate - entry_price) * 100
-        if edge_pct < BTC_MIN_EDGE_PCT:
+        if not _clears_fee_adjusted_edge_local(edge_pct, entry_price, BTC_MIN_EDGE_PCT):
             return None
 
     # Snapshot enough recent prices to retroactively test EVERY candidate
@@ -745,7 +777,12 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
             contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
             pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
             pick["contracts"] = contracts
-            pick["hypothetical_pnl"] = round((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts, 4)
+            # Kalshi's real taker fee, paid on entry regardless of win/loss --
+            # never subtracted before (2026-09-08), which meant this
+            # "hypothetical P&L" was overstating true profitability on
+            # every single resolved trade. See _kalshi_taker_fee_dollars_local.
+            entry_fee = _kalshi_taker_fee_dollars_local(pick["entry_price"], contracts)
+            pick["hypothetical_pnl"] = round(((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts) - entry_fee, 4)
         else:
             pick["hypothetical_pnl"] = None
 

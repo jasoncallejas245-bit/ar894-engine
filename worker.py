@@ -27,6 +27,52 @@ DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
+
+import math
+
+def kalshi_taker_fee_dollars(price_dollars, contracts=1.0, multiplier=1.0):
+    """
+    Kalshi's real taker-order fee, confirmed live from their published fee
+    schedule (kalshi.com/docs/kalshi-fee-schedule.pdf, July 2026 update):
+    fee = round_up(0.07 * M * C * P * (1-P)). Every order this bot places
+    is a taker order (crosses the spread to fill immediately), so this is
+    the real cost paid on every entry -- worst near a 50c coin-flip price
+    (up to ~1.75c/contract), smaller near the extremes.
+
+    This was NEVER subtracted anywhere before (2026-09-08) -- not from the
+    edge threshold that decides whether a trade is worth taking, not even
+    from the retrospective "would this have been profitable" P&L number.
+    Confirmed live: on real entry prices this bot actually used today
+    (0.47-0.61 range), the fee alone was 2.3%-3.7% of the stake -- equal to
+    or bigger than the entire 2-3% edge threshold being used to justify
+    the trade in the first place. That's very likely the real reason a
+    58-100%-"accurate" strategy still wasn't showing real profit.
+    """
+    raw = 0.07 * multiplier * contracts * price_dollars * (1 - price_dollars)
+    return math.ceil(raw * 10000) / 10000.0  # round up to the nearest hundredth of a cent
+
+
+# Minimum extra edge (in the same "cents per $1-face-value contract" units
+# as edge_pct) required ABOVE the fee before a trade is worth taking --
+# i.e. edge_pct must clear kalshi_taker_fee_dollars(price)*100 by at least
+# this much, not just clear the raw MIN_EDGE_PCT/BTC_MIN_EDGE_PCT bar.
+# Keeps a real (if modest) expected profit margin after the real cost of
+# trading, instead of a threshold that the fee alone can already consume.
+MIN_NET_EDGE_AFTER_FEE_PCT = float(os.getenv("MIN_NET_EDGE_AFTER_FEE_PCT", "1.0"))
+
+
+def clears_fee_adjusted_edge(edge_pct, price_dollars, min_edge_pct):
+    """
+    True if edge_pct clears BOTH the existing raw threshold AND leaves at
+    least MIN_NET_EDGE_AFTER_FEE_PCT of edge remaining after Kalshi's real
+    taker fee at this price. Centralizes the fee-adjusted check so every
+    call site (real trading AND paper trading, sports AND BTC) evaluates
+    "is this actually worth it" the same way.
+    """
+    if edge_pct < min_edge_pct:
+        return False
+    fee_pct = kalshi_taker_fee_dollars(price_dollars) * 100
+    return (edge_pct - fee_pct) >= MIN_NET_EDGE_AFTER_FEE_PCT
 # Only bet on the side that's actually favored to win (its own fair win
 # probability must clear this bar), not just wherever a thin statistical
 # edge happens to point -- betting AGAINST a favorite for a small edge is
@@ -697,7 +743,9 @@ def check_and_close_profitable_positions(client):
                     count_fp=str(pos["count_fp"]),
                     **price_kwargs,
                 )
-                profit = (current_bid - pos["entry_price"]) * pos["count_fp"]
+                entry_fee = kalshi_taker_fee_dollars(pos["entry_price"], pos["count_fp"])
+                exit_fee = kalshi_taker_fee_dollars(current_bid, pos["count_fp"])
+                profit = (current_bid - pos["entry_price"]) * pos["count_fp"] - entry_fee - exit_fee
                 msg = f"{ticker} [{side_label}]: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, gain +{gain_pct:.1f}% (${profit:.2f})"
                 send_discord(DISCORD_WEBHOOK_BETS, _POSITION_CLOSED_PREFIX + msg)
                 # This early-exit P&L was never being recorded to the bot's
@@ -752,7 +800,8 @@ def reconcile_settled_positions(client):
         won = (result == side_label.lower())
         entry_price = pos["entry_price"]
         count_fp = pos["count_fp"]
-        pnl = (1.0 - entry_price) * count_fp if won else -entry_price * count_fp
+        entry_fee = kalshi_taker_fee_dollars(entry_price, count_fp)
+        pnl = ((1.0 - entry_price) * count_fp if won else -entry_price * count_fp) - entry_fee
 
         new_total = ledger.record_bot_trade_result(ticker, pnl, note=f"{side_label} settled {result.upper()}")
 
@@ -840,7 +889,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             if yes_ask:
                 yes_price = float(yes_ask)
                 yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
-                if yes_edge_pct >= MIN_EDGE_PCT and edge["fair_prob"] >= favorite_min_prob:
+                if clears_fee_adjusted_edge(yes_edge_pct, yes_price, MIN_EDGE_PCT) and edge["fair_prob"] >= favorite_min_prob:
                     side_to_trade = Side.YES
                     trade_price = yes_price
                     trade_edge_pct = yes_edge_pct
@@ -850,7 +899,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 no_price = float(no_ask)
                 fair_prob_no = 1 - edge["fair_prob"]
                 no_edge_pct = (fair_prob_no - no_price) * 100
-                if no_edge_pct >= MIN_EDGE_PCT and fair_prob_no >= favorite_min_prob:
+                if clears_fee_adjusted_edge(no_edge_pct, no_price, MIN_EDGE_PCT) and fair_prob_no >= favorite_min_prob:
                     side_to_trade = Side.NO
                     trade_price = no_price
                     trade_edge_pct = no_edge_pct
@@ -922,7 +971,7 @@ def process_btc_real_trading(client):
     fair_prob_estimate = pt.get_btc_fair_prob_estimate()
     if fair_prob_estimate is not None:
         edge_pct = (fair_prob_estimate - ask_price) * 100
-        if edge_pct < pt.BTC_MIN_EDGE_PCT:
+        if not clears_fee_adjusted_edge(edge_pct, ask_price, pt.BTC_MIN_EDGE_PCT):
             return
 
     available = ledger.get_available_budget(client, load_open_positions())
