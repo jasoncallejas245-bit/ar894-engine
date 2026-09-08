@@ -193,6 +193,51 @@ def record_live_moneyline_pick(league, event_id, away_team, home_team, picked_te
         return False
 
 
+def _normalize_team_name_local(name):
+    """
+    Same normalization worker.py uses for Kalshi matching -- kept local
+    here (not imported) to avoid a circular import between worker.py and
+    paper_trading.py. Exact-equality safe, handles 'St.' vs 'State'.
+    """
+    n = (name or "").upper().strip()
+    n = n.replace(" ST.", " STATE").replace(" ST ", " STATE ")
+    if n.endswith(" ST"):
+        n = n[:-3] + " STATE"
+    n = n.replace(".", "").replace("  ", " ")
+    return n.strip()
+
+
+def _selection_side(selection, away_team, home_team):
+    """
+    Figures out whether a sportsbook row's raw 'selection' string refers to
+    the away or home team, WITHOUT assuming every book spells team names
+    the same way -- e.g. DraftKings says 'CLE Guardians' while FanDuel
+    says 'Cleveland Guardians' for the identical team in the identical
+    game. Matches on the mascot (the last word of the normalized name),
+    which stays the same across abbreviated and full spellings, and falls
+    back to exact full-name equality. Returns 'away', 'home', or None if
+    neither can be determined (row is skipped rather than guessed at).
+    """
+    def mascot(name):
+        parts = _normalize_team_name_local(name).split()
+        return parts[-1] if parts else ""
+
+    sel_mascot = mascot(selection)
+    away_mascot, home_mascot = mascot(away_team), mascot(home_team)
+
+    if sel_mascot and sel_mascot == away_mascot and sel_mascot != home_mascot:
+        return "away"
+    if sel_mascot and sel_mascot == home_mascot and sel_mascot != away_mascot:
+        return "home"
+
+    sel_full = _normalize_team_name_local(selection)
+    if sel_full and sel_full == _normalize_team_name_local(away_team):
+        return "away"
+    if sel_full and sel_full == _normalize_team_name_local(home_team):
+        return "home"
+    return None
+
+
 def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
@@ -211,12 +256,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
     for row in sharpapi_rows:
         if row.get("is_main_line") is not True or row.get("market_type") != "moneyline":
             continue
-        key = (row.get("event_id"), row.get("selection"))
+        side = _selection_side(row.get("selection"), row.get("away_team"), row.get("home_team"))
+        if side is None:
+            continue  # can't tell which team this selection refers to -- skip rather than guess
+        key = (row.get("event_id"), side)
         grouped[key][row.get("sportsbook")] = row
 
     by_event = dd(set)
-    for (event_id, selection) in grouped.keys():
-        by_event[event_id].add(selection)
+    for (event_id, side) in grouped.keys():
+        by_event[event_id].add(side)
 
     paper_data = load_paper_trades()
     already_picked = {p["event_id"] for p in paper_data["moneyline"]}
@@ -239,7 +287,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         if len(selections) != 2:
             funnel["no_two_sided_odds"] += 1
             continue
-        sel_a, sel_b = list(selections)
+        sel_a, sel_b = list(selections)  # canonical "away"/"home" labels now, not raw selection text
         rows_a, rows_b = grouped[(event_id, sel_a)], grouped[(event_id, sel_b)]
         common_books = set(rows_a.keys()) & set(rows_b.keys())
         if not common_books:
@@ -262,6 +310,8 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         fair_a, fair_b = sum(probs_a) / len(probs_a), sum(probs_b) / len(probs_b)
         best_row_a = list(rows_a.values())[0]
         away_team, home_team = best_row_a.get("away_team"), best_row_a.get("home_team")
+        team_by_side = {"away": away_team, "home": home_team}
+        fair_by_side = {"away": fair_a if sel_a == "away" else fair_b, "home": fair_b if sel_a == "away" else fair_a}
 
         # Same-day only -- mirrors real trading: the event must start later today
         # (UTC), not just within some rolling hour window that could roll into
@@ -284,14 +334,17 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             funnel["no_kalshi_match"] += 1
             continue
 
-        fair_probs = {sel_a: fair_a, sel_b: fair_b}
+        # match_map is keyed by the canonical away_team/home_team strings
+        # (see safe_match_event in worker.py), not by side label -- so look
+        # up picks by team name, and track fair probability by side label.
+        fair_probs = {team_by_side["away"]: fair_by_side["away"], team_by_side["home"]: fair_by_side["home"]}
 
         # Check BOTH selections for a genuine YES-side edge, same as real
         # trading. NO-side edges surface naturally too, since if team A's
         # fair prob is well below the market's YES price, that's really a
         # NO-side edge on team A (equivalent to a YES edge on team B).
         best_pick = None
-        for selection in (sel_a, sel_b):
+        for selection in (team_by_side["away"], team_by_side["home"]):
             match = match_map.get(selection)
             if not match:
                 continue
