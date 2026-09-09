@@ -184,6 +184,7 @@ def record_live_moneyline_pick(league, event_id, away_team, home_team, picked_te
             "is_too_close": False,
             "context_note": None,
             "source": "live",
+            "contract_price_history": [],
         }
         paper_data["moneyline"].append(pick)
         save_paper_trades(paper_data)
@@ -445,6 +446,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "is_too_close": is_too_close,
             "context_note": context_note,
             "source": "pregame",
+            "contract_price_history": [],
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -534,6 +536,118 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
     if changed:
         save_paper_trades(paper_data)
     return changed
+
+
+# Bound how much contract-price history one pending moneyline pick keeps.
+MONEYLINE_CONTRACT_HISTORY_MAX = 30
+
+
+def track_moneyline_contract_prices(client):
+    """
+    Runs on the fast cycle for every still-PENDING moneyline paper pick
+    (pregame AND live -- both are always side="YES", see
+    make_moneyline_paper_picks / record_live_moneyline_pick): records the
+    Kalshi contract's current yes-side bid, building a real price path for
+    the life of the trade. Mirrors track_btc_contract_prices exactly, but
+    for moneyline. Data collection only -- never closes a position. Never
+    raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        pending = [p for p in paper_data["moneyline"] if p["status"] == "pending" and p.get("kalshi_ticker")]
+        if not pending:
+            return
+
+        changed = False
+        now_iso = datetime.now().isoformat()
+        for pick in pending:
+            try:
+                market = client.get_market(pick["kalshi_ticker"])
+            except Exception:
+                continue
+
+            bid = getattr(market, "yes_bid_dollars", None)
+            if not bid:
+                continue
+
+            pick.setdefault("contract_price_history", [])
+            pick["contract_price_history"].append({"at": now_iso, "price": float(bid)})
+            pick["contract_price_history"] = pick["contract_price_history"][-MONEYLINE_CONTRACT_HISTORY_MAX:]
+            changed = True
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] track_moneyline_contract_prices error: {e}")
+
+
+# Mirrors BTC's early-exit feature (see check_and_close_btc_paper_early) at
+# the user's request for feature parity between the two strategies. UNLIKE
+# the BTC threshold, this one is NOT backed by a tracked price-path backtest
+# yet -- there's no historical moneyline contract_price_history to test
+# against (that data only starts being collected once this ships). Treat
+# this as an untested experiment, same as BTC's early exit was on day one:
+# paper-only, tunable/disable-able via env, and its own real performance
+# will show up in contract_price_history + the dashboard once picks resolve
+# this way.
+MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
+MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.92"))
+
+
+def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
+    """
+    Runs on the fast cycle right after track_moneyline_contract_prices. If
+    a pending pick's latest tracked bid has reached
+    MONEYLINE_PAPER_EARLY_EXIT_PROB, closes it out AT THAT PRICE instead of
+    waiting for the game to finish -- same mechanics as
+    check_and_close_btc_paper_early (both entry and exit taker fees
+    charged). Paper-only; never touches a real position. Never raises.
+    """
+    if not MONEYLINE_PAPER_EARLY_EXIT_ENABLED:
+        return
+    try:
+        paper_data = load_paper_trades()
+        changed = False
+        for pick in paper_data["moneyline"]:
+            if pick["status"] != "pending":
+                continue
+            history = pick.get("contract_price_history") or []
+            if not history or not pick.get("entry_price"):
+                continue
+            latest = history[-1]["price"]
+            if latest < MONEYLINE_PAPER_EARLY_EXIT_PROB:
+                continue
+
+            entry_price = pick["entry_price"]
+            contracts = max(1.0, PAPER_STAKE_DOLLARS / entry_price)
+            entry_fee = _kalshi_taker_fee_dollars_local(entry_price, contracts)
+            exit_fee = _kalshi_taker_fee_dollars_local(latest, contracts)
+            pnl = round(contracts * (latest - entry_price) - entry_fee - exit_fee, 4)
+
+            pick["status"] = "won" if pnl > 0 else "lost"
+            pick["exit_reason"] = "early_profit_target"
+            pick["exit_price"] = latest
+            pick["stake_dollars"] = round(entry_price * contracts, 4)
+            pick["contracts"] = contracts
+            pick["hypothetical_pnl"] = pnl
+            pick["resolved_at"] = datetime.now().isoformat()
+            changed = True
+
+            balance, is_down, down_by = record_paper_bankroll_change(
+                "moneyline", pnl, pick.get("kalshi_ticker"),
+                note=f"{pick['league']} {pick['picked_team']} early-exit at ${latest:.2f}",
+            )
+            if send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[PAPER EARLY EXIT - {pick['league']}] {pick['picked_team']} cashed out at ${latest:.2f} "
+                    f"(entry ${entry_price:.2f}) -- ${pnl:+.2f}. Moneyline paper bankroll: ${balance:.2f}",
+                )
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] check_and_close_moneyline_paper_early error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1170,14 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
         if t["status"] in ("won", "lost") and t.get("hypothetical_pnl") is not None
     ]
     if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
+        # Still record progress toward the threshold (mirrors
+        # maybe_adjust_btc_momentum_window) -- previously this returned
+        # without ever writing moneyline_sample_size, so the dashboard's
+        # "Data collected" bar showed 0 of 30 the entire time, even once
+        # real resolved bets existed. Fixed 2026-09-09.
+        settings = load_adaptive_settings()
+        settings["moneyline_sample_size"] = len(resolved)
+        save_adaptive_settings(settings)
         return None
 
     current_bar = get_effective_favorite_min_prob()

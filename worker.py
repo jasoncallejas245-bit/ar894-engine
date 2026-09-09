@@ -24,6 +24,12 @@ os.environ.setdefault("KALSHI_PRIVATE_KEY_PATH", os.environ["KALSHI_PRIVATE_KEY_
 SHARPAPI_KEY = os.environ["SHARPAPI_KEY"]
 DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
 DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
+# Optional, separate channels -- each falls back to DISCORD_WEBHOOK_UPDATES
+# if not set, so nothing breaks until these are actually configured in
+# Railway. Set DISCORD_WEBHOOK_BTC / DISCORD_WEBHOOK_ERRORS env vars to a
+# different channel's webhook URL to split traffic out.
+DISCORD_WEBHOOK_BTC = os.getenv("DISCORD_WEBHOOK_BTC", DISCORD_WEBHOOK_UPDATES)
+DISCORD_WEBHOOK_ERRORS = os.getenv("DISCORD_WEBHOOK_ERRORS", DISCORD_WEBHOOK_UPDATES)
 
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
 MIN_EDGE_PCT = 2.0
@@ -272,6 +278,7 @@ def _record_error_log(message):
 def send_discord(webhook_url, message, _retries=3):
     if message.startswith(_ERROR_PREFIX):
         _record_error_log(message)
+        webhook_url = DISCORD_WEBHOOK_ERRORS
     for attempt in range(_retries):
         try:
             resp = requests.post(webhook_url, json={"content": message}, timeout=5)
@@ -1127,12 +1134,14 @@ def run_btc_and_resolution(client):
         print("[btc] checking momentum...")
         if BTC_REAL_TRADING_ENABLED and not ledger.is_trading_halted():
             process_btc_real_trading(client)
-        pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_BTC)
         pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
-        pt.check_and_close_btc_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
+        pt.check_and_close_btc_paper_early(send_discord, DISCORD_WEBHOOK_BTC)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
         live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
         live_trading.check_tie_alerts(send_discord, DISCORD_WEBHOOK_BETS)  # TIE ALERT HOOK -- delete this line to remove the feature
-        pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- mirrors BTC's, feeds the early-exit check below
+        pt.check_and_close_moneyline_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's
+        pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_BTC)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
@@ -1143,7 +1152,7 @@ def run_btc_and_resolution(client):
         print(f"[ledger] deposit check error: {e}")
 
     try:
-        pt.maybe_adjust_btc_momentum_window(send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.maybe_adjust_btc_momentum_window(send_discord, DISCORD_WEBHOOK_BTC)
     except Exception as e:
         print(f"[adjust] error: {e}")
 

@@ -152,6 +152,24 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
+  <div class="card">
+    <h3>Recent Wins</h3>
+    <div class="sub" style="margin-bottom:10px;">Last picks that hit, across both strategies — most recent first.</div>
+    {% if recent_wins %}
+      {% for p in recent_wins[:10] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% if p.exit_reason == "early_profit_target" %} <span class="badge">early exit</span>{% endif %}</div>
+          <div class="sub">entry ${{ "%.2f"|format(p.entry_price) }}{% if p.exit_price %} → exit ${{ "%.2f"|format(p.exit_price) }}{% endif %} · {{ p.resolved_at }}</div>
+        </div>
+        <div class="green" style="white-space:nowrap;">${{ "%.2f"|format(p.pnl) }}</div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No wins yet.</div>
+    {% endif %}
+  </div>
+
   {% if adaptive.last_adjusted %}
   <div class="muted" style="text-align:center; margin-bottom:8px;">Last time it changed a setting on its own: {{ adaptive.last_adjusted }}</div>
   {% endif %}
@@ -284,6 +302,17 @@ def dashboard():
         "Disabled (BTC_PAPER_EARLY_EXIT_ENABLED=false) -- holding every position to full settlement"
     )
 
+    all_moneyline_picks_early = pt.load_paper_trades().get("moneyline", [])
+    ml_early_exits = [p for p in all_moneyline_picks_early if p.get("exit_reason") == "early_profit_target"]
+    ml_early_exit_note = (
+        f"{len(ml_early_exits)} pick(s) cashed out early instead of waiting for the game to finish "
+        f"(threshold: {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied) -- "
+        f"${sum(p.get('hypothetical_pnl') or 0 for p in ml_early_exits):+.2f} from those so far. "
+        f"Unlike BTC's, this threshold isn't backed by tracked price data yet -- it's a new experiment."
+        if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else
+        "Disabled (MONEYLINE_PAPER_EARLY_EXIT_ENABLED=false) -- holding every pick until the game finishes"
+    )
+
     categories = [
         {
             "key": "moneyline", "label": "Sports Moneyline (NFL/NCAAF/MLB/UFC/ATP/WNBA)",
@@ -296,6 +325,11 @@ def dashboard():
                     "label": "How sure it must be to bet",
                     "value": favorite_note,
                     "explanation": "It only bets on a team if it thinks they're at least this likely to win. Higher = more cautious, fewer bets.",
+                },
+                {
+                    "label": "Early profit-taking",
+                    "value": f"On, at {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied" if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else "Off",
+                    "explanation": ml_early_exit_note,
                 },
             ],
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
@@ -329,6 +363,25 @@ def dashboard():
 
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
     too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
+
+    recent_wins = []
+    for p in all_moneyline_picks:
+        if p.get("status") == "won" and p.get("hypothetical_pnl") is not None:
+            recent_wins.append({
+                "name": p.get("picked_team"), "category": p.get("league", "?"),
+                "entry_price": p.get("entry_price") or 0, "exit_price": p.get("exit_price"),
+                "exit_reason": p.get("exit_reason"), "resolved_at": p.get("resolved_at", ""),
+                "pnl": p.get("hypothetical_pnl"),
+            })
+    for t in btc_all_trades:
+        if t.get("status") == "won" and t.get("hypothetical_pnl") is not None:
+            recent_wins.append({
+                "name": t.get("predicted_direction", "?").upper(), "category": "BTC",
+                "entry_price": t.get("entry_price") or 0, "exit_price": t.get("exit_price"),
+                "exit_reason": t.get("exit_reason"), "resolved_at": t.get("resolved_at", ""),
+                "pnl": t.get("hypothetical_pnl"),
+            })
+    recent_wins.sort(key=lambda w: w.get("resolved_at") or "", reverse=True)
 
     cycle_status = safe_read_json(worker.CYCLE_STATUS_FILE, {})
     error_log = safe_read_json(worker.ERROR_LOG_FILE, [])
@@ -403,6 +456,7 @@ def dashboard():
         adaptive=adaptive,
         min_sample=min_sample,
         too_close_picks=too_close_picks,
+        recent_wins=recent_wins,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
         trading_halted=trading_halted,
