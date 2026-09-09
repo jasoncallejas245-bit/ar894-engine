@@ -559,9 +559,19 @@ def short_name(kalshi_title):
     return (kalshi_title or "").replace(" wins", "").strip()
 
 
+NAME_SUFFIXES = {"JR", "JR.", "SR", "SR.", "II", "III", "IV", "V"}
+
+
 def surname(full_name):
-    """Last word of a full name, normalized -- e.g. 'Alexandre Pantoja' -> 'PANTOJA'."""
+    """Last word of a full name, normalized -- e.g. 'Alexandre Pantoja' -> 'PANTOJA'.
+    Strips trailing generational suffixes (Jr/Sr/II/III/IV/V) first -- otherwise
+    a fighter like 'Sean King III' would surname-match as 'III' instead of
+    'KING', which silently breaks if one data source includes the suffix and
+    the other doesn't (confirmed as a live risk on the 2026-09-12 UFC card,
+    which has exactly this fighter)."""
     parts = (full_name or "").strip().split()
+    while parts and parts[-1].upper().rstrip(".") in {s.rstrip(".") for s in NAME_SUFFIXES}:
+        parts = parts[:-1]
     return parts[-1].upper() if parts else ""
 
 
@@ -1073,6 +1083,7 @@ def run_btc_and_resolution(client):
             process_btc_real_trading(client)
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
+        pt.check_and_close_btc_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
         live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
         live_trading.check_tie_alerts(send_discord, DISCORD_WEBHOOK_BETS)  # TIE ALERT HOOK -- delete this line to remove the feature
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)

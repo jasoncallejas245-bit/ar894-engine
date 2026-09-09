@@ -751,6 +751,76 @@ def track_btc_contract_prices(client):
         print(f"[paper_trading] track_btc_contract_prices error: {e}")
 
 
+# Backed by real tracked-price data (2026-09-09): across 38 BTC paper trades
+# with a recorded contract price path, holding every position to full 15-min
+# settlement netted -$9.40 total. Simulating "cash out the moment the
+# contract's own bid first reaches this price" on those same 38 trades
+# netted +$11 to +$20 instead -- a handful of positions that spiked to 90%+
+# implied probability and then fully reversed to a loss account for nearly
+# all of the difference. Small sample, so this is a live experiment, not a
+# proven edge -- paper-only (real BTC trading is off) so it builds forward
+# evidence before anything is ever risked for real. Tune or disable via env.
+BTC_PAPER_EARLY_EXIT_ENABLED = os.getenv("BTC_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
+BTC_PAPER_EARLY_EXIT_PROB = float(os.getenv("BTC_PAPER_EARLY_EXIT_PROB", "0.80"))
+
+
+def check_and_close_btc_paper_early(send_discord_fn=None, webhook=None):
+    """
+    Runs on the fast cycle, right after track_btc_contract_prices records
+    each pending BTC pick's latest contract bid. If that bid has reached
+    BTC_PAPER_EARLY_EXIT_PROB, closes the paper position out AT THAT PRICE
+    instead of waiting for full settlement -- exactly what selling the
+    contract for real would do. Both the entry fee and this exit's own
+    taker fee are charged, same as a real round-trip would cost. Paper-only;
+    never touches a real position. Never raises.
+    """
+    if not BTC_PAPER_EARLY_EXIT_ENABLED:
+        return
+    try:
+        paper_data = load_paper_trades()
+        changed = False
+        for pick in paper_data["btc"]:
+            if pick["status"] != "pending":
+                continue
+            history = pick.get("contract_price_history") or []
+            if not history or not pick.get("entry_price"):
+                continue
+            latest = history[-1]["price"]
+            if latest < BTC_PAPER_EARLY_EXIT_PROB:
+                continue
+
+            entry_price = pick["entry_price"]
+            contracts = max(1.0, PAPER_STAKE_DOLLARS / entry_price)
+            entry_fee = _kalshi_taker_fee_dollars_local(entry_price, contracts)
+            exit_fee = _kalshi_taker_fee_dollars_local(latest, contracts)
+            pnl = round(contracts * (latest - entry_price) - entry_fee - exit_fee, 4)
+
+            pick["status"] = "won" if pnl > 0 else "lost"
+            pick["exit_reason"] = "early_profit_target"
+            pick["exit_price"] = latest
+            pick["stake_dollars"] = round(entry_price * contracts, 4)
+            pick["contracts"] = contracts
+            pick["hypothetical_pnl"] = pnl
+            pick["resolved_at"] = datetime.now().isoformat()
+            changed = True
+
+            balance, is_down, down_by = record_paper_bankroll_change(
+                "btc", pnl, pick.get("ticker"),
+                note=f"BTC early-exit at ${latest:.2f} ({pick['predicted_direction']})",
+            )
+            if send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[PAPER EARLY EXIT] {pick['ticker']} cashed out at ${latest:.2f} "
+                    f"(entry ${entry_price:.2f}) -- ${pnl:+.2f}. BTC paper bankroll: ${balance:.2f}",
+                )
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] check_and_close_btc_paper_early error: {e}")
+
+
 def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
     paper_data = load_paper_trades()
     changed = False

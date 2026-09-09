@@ -252,6 +252,16 @@ def dashboard():
         f"Will start requiring a {pt.BTC_MIN_EDGE_PCT:.0f}% edge once it has {min_sample} finished bets to judge from -- still gathering data for now."
     )
 
+    btc_all_trades = pt.load_paper_trades().get("btc", [])
+    btc_early_exits = [t for t in btc_all_trades if t.get("exit_reason") == "early_profit_target"]
+    btc_early_exit_note = (
+        f"{len(btc_early_exits)} trade(s) cashed out early instead of holding to expiry "
+        f"(threshold: {pt.BTC_PAPER_EARLY_EXIT_PROB*100:.0f}% implied) -- "
+        f"${sum(t.get('hypothetical_pnl') or 0 for t in btc_early_exits):+.2f} from those so far"
+        if pt.BTC_PAPER_EARLY_EXIT_ENABLED else
+        "Disabled (BTC_PAPER_EARLY_EXIT_ENABLED=false) -- holding every position to full settlement"
+    )
+
     categories = [
         {
             "key": "moneyline", "label": "Sports Moneyline (NFL/NCAAF/MLB/UFC/ATP/WNBA)",
@@ -284,6 +294,11 @@ def dashboard():
                     "label": "Minimum edge required",
                     "value": f"{pt.BTC_MIN_EDGE_PCT:.0f}%" + (f" (est. {btc_fair_prob*100:.0f}% accurate)" if btc_fair_prob is not None else ""),
                     "explanation": btc_edge_note,
+                },
+                {
+                    "label": "Early profit-taking",
+                    "value": f"On, at {pt.BTC_PAPER_EARLY_EXIT_PROB*100:.0f}% implied" if pt.BTC_PAPER_EARLY_EXIT_ENABLED else "Off",
+                    "explanation": btc_early_exit_note,
                 },
             ],
             "sample": min(adaptive.get("btc_sample_size", 0), min_sample),
@@ -693,6 +708,7 @@ def btc_price_paths_route():
                 "entry_price": p.get("entry_price"), "contract_price_history": p.get("contract_price_history", []),
                 "picked_at": p.get("picked_at"), "resolved_at": p.get("resolved_at"),
                 "hypothetical_pnl": p.get("hypothetical_pnl"), "stake_dollars": p.get("stake_dollars"),
+                "exit_reason": p.get("exit_reason", "held_to_expiry"), "exit_price": p.get("exit_price"),
             }
             for p in btc
         ],
