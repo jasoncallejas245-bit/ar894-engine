@@ -998,6 +998,62 @@ def circuit_breaker_status_route():
     }
 
 
+@app.route("/health")
+def health_route():
+    """Machine-readable health check for automated monitoring -- the same
+    facts the "/" dashboard shows as human-readable text (activity.status_text,
+    recent_errors), but as raw JSON so a script doesn't have to scrape HTML.
+    """
+    import worker
+    cycle_status = safe_read_json(worker.CYCLE_STATUS_FILE, {})
+    error_log = safe_read_json(worker.ERROR_LOG_FILE, [])
+
+    finished_at = cycle_status.get("cycle_finished_at")
+    started_at = cycle_status.get("cycle_started_at")
+    interval = cycle_status.get("scan_interval_seconds", worker.SCAN_INTERVAL_SECONDS)
+
+    seconds_since_last_finish = None
+    if finished_at:
+        try:
+            seconds_since_last_finish = (
+                datetime.now() - datetime.fromisoformat(finished_at)
+            ).total_seconds()
+        except Exception:
+            seconds_since_last_finish = None
+
+    if finished_at and (not started_at or finished_at >= started_at):
+        cycle_state = "idle"
+    elif started_at:
+        cycle_state = "scanning"
+    else:
+        cycle_state = "starting_up"
+
+    # Stale if we've gone more than 2x the scan interval since the last
+    # completed cycle with no new cycle in progress -- a scan should never
+    # take that long to come back around under normal operation.
+    stale = (
+        cycle_state == "idle"
+        and seconds_since_last_finish is not None
+        and seconds_since_last_finish > 2 * interval
+    )
+
+    ledger_data = ledger.load_bot_pnl()
+
+    return {
+        "halted": ledger_data.get("halted", False),
+        "halted_reason": ledger_data.get("halted_reason"),
+        "halted_at": ledger_data.get("halted_at"),
+        "cycle_state": cycle_state,
+        "cycle_started_at": started_at,
+        "cycle_finished_at": finished_at,
+        "seconds_since_last_scan": seconds_since_last_finish,
+        "scan_interval_seconds": interval,
+        "stale": stale,
+        "recent_errors": list(reversed(error_log[-5:])),
+        "error_count_total": len(error_log),
+    }
+
+
 @app.route("/resume_trading", methods=["POST"])
 def resume_trading_route():
     """Manually clears the drawdown circuit breaker's halt so real trading
