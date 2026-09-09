@@ -447,6 +447,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "context_note": context_note,
             "source": "pregame",
             "contract_price_history": [],
+            "event_start_time": start_str,
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -763,10 +764,21 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     # this strategy's real track record, instead of taking every signal
     # regardless of what it costs.
     fair_prob_estimate = get_btc_fair_prob_estimate()
+    sized_stake_dollars = PAPER_STAKE_DOLLARS
     if fair_prob_estimate is not None and entry_price is not None:
         edge_pct = (fair_prob_estimate - entry_price) * 100
         if not _clears_fee_adjusted_edge_local(edge_pct, entry_price, BTC_MIN_EDGE_PCT):
             return None
+        # "Free roam" sizing, at the user's request: instead of every BTC
+        # paper trade risking the same flat $5, size UP for a stronger
+        # edge and DOWN for one that just barely cleared the bar --
+        # bounded to 0.5x-2.5x the base stake so one confident-looking
+        # signal can't dominate the whole paper bankroll on its own
+        # (unbounded sizing is meaningless anyway: see the flat-stake
+        # discussion from 2026-09-09 -- what matters is weighting good
+        # trades more than marginal ones, not just betting bigger overall).
+        size_multiplier = max(0.5, min(2.5, edge_pct / BTC_MIN_EDGE_PCT))
+        sized_stake_dollars = round(PAPER_STAKE_DOLLARS * size_multiplier, 2)
 
     # Snapshot enough recent prices to retroactively test EVERY candidate
     # window later (max window is 5, so keep 6: one more than needed, as a
@@ -779,6 +791,7 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
     pick = {
         "ticker": market.ticker,
         "title": market.title,
+        "close_time": getattr(market, "close_time", None),
         "predicted_direction": direction,
         "btc_price_at_pick": price,
         "momentum_signal": momentum,
@@ -795,6 +808,7 @@ def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
         # holding to full 15-min resolution) can eventually be picked from
         # actual price paths instead of guessed at.
         "contract_price_history": [],
+        "sized_stake_dollars": sized_stake_dollars,
     }
     paper_data["btc"].append(pick)
     save_paper_trades(paper_data)
@@ -914,7 +928,8 @@ def check_and_close_btc_paper_early(send_discord_fn=None, webhook=None):
                 continue
 
             entry_price = pick["entry_price"]
-            contracts = max(1.0, PAPER_STAKE_DOLLARS / entry_price)
+            stake = pick.get("sized_stake_dollars", PAPER_STAKE_DOLLARS)
+            contracts = max(1.0, stake / entry_price)
             entry_fee = _kalshi_taker_fee_dollars_local(entry_price, contracts)
             exit_fee = _kalshi_taker_fee_dollars_local(latest, contracts)
             pnl = round(contracts * (latest - entry_price) - entry_fee - exit_fee, 4)
@@ -968,7 +983,8 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
         pick["resolved_at"] = datetime.now().isoformat()
 
         if pick.get("entry_price"):
-            contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
+            stake = pick.get("sized_stake_dollars", PAPER_STAKE_DOLLARS)
+            contracts = max(1.0, stake / pick["entry_price"])
             pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
             pick["contracts"] = contracts
             # Kalshi's real taker fee, paid on entry regardless of win/loss --

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, render_template_string, request, redirect
 from pykalshi import KalshiClient
 
@@ -138,7 +138,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span></div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format(p.market_probability*100) }}% likely to win · {{ p.status }}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format(p.market_probability*100) }}% likely to win · {{ p.status }}{% if p.starts_in %} · game {{ p.starts_in }}{% endif %}</div>
           {% if p.context_note %}
             <div class="sub" style="white-space:pre-line; margin-top:4px;">{{ p.context_note }}</div>
           {% else %}
@@ -149,6 +149,24 @@ PAGE_TEMPLATE = """
       {% endfor %}
     {% else %}
       <div class="muted">None right now — no picks have been this close to a coin flip yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Pending Picks — Live Countdown</h3>
+    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves.</div>
+    {% if pending_picks %}
+      {% for p in pending_picks %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span></div>
+          <div class="sub">{{ p.opponent }} · entry ${{ "%.2f"|format(p.entry_price) }}</div>
+          <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">Nothing pending right now.</div>
     {% endif %}
   </div>
 
@@ -408,6 +426,41 @@ def dashboard():
             return f"{int(secs/60)}m ago"
         return f"{secs/3600:.1f}h ago"
 
+    def _fmt_when(iso_str):
+        """Human date+time for any stored timestamp, e.g. 'Sep 9, 7:46 PM'."""
+        if not iso_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
+            return dt.strftime("%b %-d, %-I:%M %p")
+        except Exception:
+            return None
+
+    def _fmt_countdown(iso_str):
+        """'starts in 2h 15m' / 'in progress' / 'starting any moment' for a
+        future (or just-passed) timestamp -- used for game start times and
+        BTC's 15-min window close_time. Returns None if there's nothing to show."""
+        if not iso_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+            secs = (dt - now).total_seconds()
+        except Exception:
+            return None
+        if secs <= -600:
+            return "in progress"
+        if secs <= 0:
+            return "starting any moment"
+        if secs < 60:
+            return f"in {int(secs)}s"
+        if secs < 3600:
+            return f"in {int(secs/60)}m"
+        h, m = int(secs // 3600), int((secs % 3600) // 60)
+        return f"in {h}h {m}m"
+
     finished_at = cycle_status.get("cycle_finished_at")
     started_at = cycle_status.get("cycle_started_at")
     interval = cycle_status.get("scan_interval_seconds", worker.SCAN_INTERVAL_SECONDS)
@@ -433,6 +486,43 @@ def dashboard():
         ago = _fmt_ago(err.get("at", ""))
         if ago:
             err["at"] = ago
+
+    # Nicely format Recent Wins' resolved_at now that _fmt_when exists.
+    for w in recent_wins:
+        w["resolved_at"] = _fmt_when(w.get("resolved_at")) or w.get("resolved_at") or ""
+
+    # Nicely format Close Calls' game-start countdown.
+    for p in too_close_picks:
+        p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
+
+    # Pending Picks -- every still-open moneyline pick plus the current BTC
+    # window, each with when it started/starts and when it resolves, so
+    # there's one place to see "what's live right now and when do I find out."
+    pending_picks = []
+    for p in all_moneyline_picks:
+        if p.get("status") != "pending":
+            continue
+        if p.get("source") == "pregame":
+            timing_label, timing_value = "Game starts", _fmt_countdown(p.get("event_start_time"))
+        else:
+            timing_label, timing_value = "Status", "in progress (live pick)"
+        pending_picks.append({
+            "name": p.get("picked_team"), "category": p.get("league", "?"),
+            "opponent": f"{p.get('away_team')} @ {p.get('home_team')}",
+            "picked_at": _fmt_when(p.get("picked_at")),
+            "timing_label": timing_label, "timing_value": timing_value,
+            "entry_price": p.get("entry_price") or 0,
+        })
+    for t in btc_all_trades:
+        if t.get("status") != "pending":
+            continue
+        pending_picks.append({
+            "name": t.get("predicted_direction", "?").upper(), "category": "BTC",
+            "opponent": t.get("title") or t.get("ticker"),
+            "picked_at": _fmt_when(t.get("picked_at")),
+            "timing_label": "Window resolves", "timing_value": _fmt_countdown(t.get("close_time")),
+            "entry_price": t.get("entry_price") or 0,
+        })
 
     activity = {
         "status_text": status_text,
@@ -467,6 +557,7 @@ def dashboard():
         min_sample=min_sample,
         too_close_picks=too_close_picks,
         recent_wins=recent_wins,
+        pending_picks=pending_picks,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
         trading_halted=trading_halted,
