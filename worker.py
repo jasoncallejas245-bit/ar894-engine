@@ -252,7 +252,26 @@ _POSITION_CLOSED_PREFIX = "Took the profit while it was there. "
 _ERROR_PREFIX = "Small hiccup, sir — nothing to worry about, but you should know: "
 
 
+ERROR_LOG_FILE = os.path.join(DATA_DIR, "error_log.json")
+ERROR_LOG_MAX_ENTRIES = 100
+
+
+def _record_error_log(message):
+    """Every message that starts with _ERROR_PREFIX also gets saved here,
+    so the dashboard can show recent errors without anyone having to go
+    dig through Discord scrollback. Never raises."""
+    try:
+        log = safe_read_json(ERROR_LOG_FILE, [])
+        log.append({"at": datetime.now().isoformat(), "message": message})
+        log = log[-ERROR_LOG_MAX_ENTRIES:]
+        atomic_write_json(ERROR_LOG_FILE, log)
+    except Exception as e:
+        print(f"[error_log] failed to record: {e}")
+
+
 def send_discord(webhook_url, message, _retries=3):
+    if message.startswith(_ERROR_PREFIX):
+        _record_error_log(message)
     for attempt in range(_retries):
         try:
             resp = requests.post(webhook_url, json={"content": message}, timeout=5)
@@ -1042,12 +1061,38 @@ def check_daily_summary():
     atomic_write_json(LAST_SUMMARY_FILE, {"date": today})
 
 
+CYCLE_STATUS_FILE = os.path.join(DATA_DIR, "cycle_status.json")
+
+
+def _record_cycle_status(phase, run_sports_scan=None, error=None):
+    """Tracks what the fast/main loop is doing right now, purely for the
+    dashboard's 'what's it doing / when's the next scan' panel. Never
+    raises, never affects trading logic."""
+    try:
+        status = safe_read_json(CYCLE_STATUS_FILE, {})
+        now_iso = datetime.now().isoformat()
+        if phase == "started":
+            status["cycle_started_at"] = now_iso
+            status["run_sports_scan"] = run_sports_scan
+            status["last_error"] = None
+        elif phase == "finished":
+            status["cycle_finished_at"] = now_iso
+            status["scan_interval_seconds"] = SCAN_INTERVAL_SECONDS
+        elif phase == "error":
+            status["last_error"] = {"at": now_iso, "message": str(error)}
+        atomic_write_json(CYCLE_STATUS_FILE, status)
+    except Exception as e:
+        print(f"[cycle_status] failed to record: {e}")
+
+
 def run_once(client, seen_trades, run_sports_scan=True):
+    _record_cycle_status("started", run_sports_scan=run_sports_scan)
     check_and_close_profitable_positions(client)
     reconcile_settled_positions(client)
 
     if not run_sports_scan:
         run_btc_and_resolution(client)
+        _record_cycle_status("finished")
         return
 
     # Real trading only for REAL_TRADING_LEAGUES; every league still gets
@@ -1070,6 +1115,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
     run_btc_and_resolution(client)
+    _record_cycle_status("finished")
 
 
 def run_btc_and_resolution(client):
@@ -1138,6 +1184,7 @@ def main():
                 last_sports_scan = time.time()
         except Exception as e:
             print(f"[loop] error: {e}")
+            _record_cycle_status("error", error=e)
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + str(e))
         time.sleep(SCAN_INTERVAL_SECONDS)
 

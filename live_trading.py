@@ -114,6 +114,19 @@ def track_live_candidates(league, sharpapi_rows, kalshi_events, safe_match_fn):
             event_id = row.get("event_id")
             seen_events.setdefault(event_id, row)
 
+        # SharpAPI doesn't always give the same real-world match a stable
+        # event_id across scans -- confirmed live (2026-09-09): the same
+        # ATP match (Michelsen vs Tiafoe) showed up as both
+        # "..._b2" and "..._b3" a scan apart, which the old event_id-only
+        # dedup couldn't catch, so it got tracked and picked TWICE. The
+        # Kalshi ticker pair is what's actually stable -- two rows that
+        # resolve to the same away/home ticker are certainly the same
+        # real match, whatever event_id SharpAPI hands them, so that's
+        # the real dedup key.
+        already_tracked_ticker_pairs = {
+            (g["league"], g["away_ticker"], g["home_ticker"]) for g in data["games"].values()
+        }
+
         changed = False
         for event_id, row in seen_events.items():
             key = f"{league}:{event_id}"
@@ -141,6 +154,9 @@ def track_live_candidates(league, sharpapi_rows, kalshi_events, safe_match_fn):
             home_market = match_map.get(home_team)
             if not away_market or not home_market:
                 continue
+
+            if (league, away_market.ticker, home_market.ticker) in already_tracked_ticker_pairs:
+                continue  # same real match already tracked under a different event_id
 
             data["games"][key] = {
                 "league": league,

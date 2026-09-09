@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from flask import Flask, render_template_string, request, redirect
 from pykalshi import KalshiClient
 
@@ -64,6 +65,27 @@ PAGE_TEMPLATE = """
     {% if real_trading_on %}Using real money on: {{ real_trading_summary }}{% else %}Practice mode — no real money is being risked right now{% endif %}
   </div>
   <div class="muted" style="margin:-10px 0 16px 0;">{% if real_trading_on %}The bot is placing real bets with real dollars on the leagues listed above.{% else %}Everything below is a simulation — it tracks what WOULD happen so the strategy can be tested safely before any real money is used.{% endif %}</div>
+
+  <div class="card" style="padding:12px 16px;">
+    <div class="row">
+      <span class="label">Right now</span>
+      <span>{{ activity.status_text }}</span>
+    </div>
+    <div class="row">
+      <span class="label">Next scan</span>
+      <span>{{ activity.next_scan_text }}</span>
+    </div>
+    {% if activity.recent_errors %}
+    <details style="margin-top:8px;">
+      <summary>{{ activity.recent_errors|length }} recent hiccup(s) — tap to see</summary>
+      {% for err in activity.recent_errors %}
+      <div class="sub" style="margin-top:6px; padding-top:6px; border-top:1px solid #21262d;">{{ err.at }} — {{ err.message }}</div>
+      {% endfor %}
+    </details>
+    {% else %}
+    <div class="sub" style="margin-top:4px;">No errors in the last {{ activity.error_window_label }}.</div>
+    {% endif %}
+  </div>
 
   {% if pending_deposit %}
   <div class="alert">
@@ -308,6 +330,54 @@ def dashboard():
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
     too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
 
+    cycle_status = safe_read_json(worker.CYCLE_STATUS_FILE, {})
+    error_log = safe_read_json(worker.ERROR_LOG_FILE, [])
+
+    def _fmt_ago(iso_str):
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            secs = (datetime.now() - dt).total_seconds()
+        except Exception:
+            return None
+        if secs < 60:
+            return f"{int(secs)}s ago"
+        if secs < 3600:
+            return f"{int(secs/60)}m ago"
+        return f"{secs/3600:.1f}h ago"
+
+    finished_at = cycle_status.get("cycle_finished_at")
+    started_at = cycle_status.get("cycle_started_at")
+    interval = cycle_status.get("scan_interval_seconds", worker.SCAN_INTERVAL_SECONDS)
+    if finished_at and (not started_at or finished_at >= started_at):
+        # Idle between cycles -- currently waiting for the next one.
+        ago = _fmt_ago(finished_at)
+        status_text = f"Idle — finished last scan {ago}" if ago else "Idle"
+        try:
+            secs_left = interval - (datetime.now() - datetime.fromisoformat(finished_at)).total_seconds()
+            next_scan_text = f"in ~{max(0, int(secs_left))}s" if secs_left > 0 else "any moment now"
+        except Exception:
+            next_scan_text = f"every {interval}s"
+    elif started_at:
+        ago = _fmt_ago(started_at)
+        status_text = f"Scanning now (started {ago})" if ago else "Scanning now"
+        next_scan_text = "right after this scan finishes"
+    else:
+        status_text = "Starting up..."
+        next_scan_text = f"every {interval}s"
+
+    recent_errors = list(reversed(error_log[-5:]))
+    for err in recent_errors:
+        ago = _fmt_ago(err.get("at", ""))
+        if ago:
+            err["at"] = ago
+
+    activity = {
+        "status_text": status_text,
+        "next_scan_text": next_scan_text,
+        "recent_errors": recent_errors,
+        "error_window_label": "recent scans",
+    }
+
     real_trading_on = bool(worker.REAL_TRADING_LEAGUES) or worker.BTC_REAL_TRADING_ENABLED
     real_trading_summary = ", ".join(sorted(worker.REAL_TRADING_LEAGUES)) if worker.REAL_TRADING_LEAGUES else ""
     if worker.BTC_REAL_TRADING_ENABLED:
@@ -339,6 +409,7 @@ def dashboard():
         halted_reason=bot_pnl_data.get("halted_reason"),
         loss_limit_percent=ledger.MAX_LOSS_PERCENT,
         current_loss_pct=current_loss_pct,
+        activity=activity,
     )
 
 
@@ -432,6 +503,40 @@ def purge_stale_moneyline_picks_route():
     client = get_client()
     kept, removed = pt.purge_stale_moneyline_picks(client)
     return f"Kept {kept} near-term picks, removed {removed} stale ones.\n"
+
+
+@app.route("/purge_duplicate_live_picks", methods=["POST"])
+def purge_duplicate_live_picks_route():
+    """One-time cleanup for a real bug found 2026-09-09: SharpAPI can hand
+    the same real-world live match two different event_ids across scans
+    (confirmed: an ATP match showed up as both "..._b2" and "..._b3"),
+    and the old dedup logic in live_trading.track_live_candidates keyed
+    only on event_id, so it tracked and picked the SAME real match twice.
+    Fixed going forward (dedup now also checks the matched Kalshi ticker
+    pair) -- this route removes the duplicate picks that already happened
+    before the fix, keeping the earliest one of each (league, away_ticker,
+    home_ticker, side) group so real learning stats aren't double-counted.
+    No dashboard button -- trigger with:
+    curl -X POST https://<your-app>.up.railway.app/purge_duplicate_live_picks
+    """
+    import paper_trading as pt
+    data = pt.load_paper_trades()
+    picks = data.get("moneyline", [])
+
+    seen = {}
+    kept, removed = [], 0
+    for p in sorted(picks, key=lambda p: p.get("picked_at") or ""):
+        dedup_key = (p.get("league"), p.get("kalshi_ticker"), p.get("side"))
+        if p.get("source") == "live" and dedup_key in seen:
+            removed += 1
+            continue
+        if p.get("source") == "live":
+            seen[dedup_key] = True
+        kept.append(p)
+
+    data["moneyline"] = kept
+    pt.save_paper_trades(data)
+    return f"Kept {len(kept)} picks, removed {removed} duplicate live pick(s).\n"
 
 
 @app.route("/live_picks")
