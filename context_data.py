@@ -300,6 +300,110 @@ def get_venue_forecast(lat, lon):
         return None
 
 
+def get_team_recent_form(league, team_name, num_games=10):
+    """
+    "How has this team been playing lately" -- a real signal (2026-09-09):
+    going through the user's own manual betting history (a year+ of
+    Gemini conversations building parlays) showed recent team form and
+    the starting-pitcher matchup were the two things actually driving
+    picks, not just the raw sportsbook odds AR894's edge math already
+    uses. This adds recent form; get_probable_pitcher_note below adds
+    the pitcher piece.
+
+    Returns a short string like "7-3 in last 10, won 4 in a row" (or
+    "lost 2 in a row" / "" if the streak is 1) using ESPN's free team
+    schedule endpoint -- the same free-API pattern as the rest of this
+    module. None if the team can't be matched or the lookup fails.
+    """
+    team_id = _find_team_id(league, team_name)
+    path = ESPN_LEAGUE_PATHS.get(league)
+    if not team_id or not path:
+        return None
+    try:
+        data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/teams/{team_id}/schedule")
+        events = data.get("events", [])
+        completed = [
+            e for e in events
+            if e.get("competitions", [{}])[0].get("status", {}).get("type", {}).get("completed")
+        ]
+        completed.sort(key=lambda e: e.get("date", ""))
+        recent = completed[-num_games:]
+        if not recent:
+            return None
+
+        results = []  # True = this team won
+        for e in recent:
+            comp = e["competitions"][0]
+            for c in comp.get("competitors", []):
+                if c.get("team", {}).get("id") == str(team_id):
+                    results.append(bool(c.get("winner")))
+                    break
+
+        if not results:
+            return None
+
+        wins = sum(1 for r in results if r)
+        losses = len(results) - wins
+
+        streak_len = 1
+        streak_won = results[-1]
+        for r in reversed(results[:-1]):
+            if r == streak_won:
+                streak_len += 1
+            else:
+                break
+        streak_note = ""
+        if streak_len >= 2:
+            streak_note = f", {'won' if streak_won else 'lost'} {streak_len} in a row"
+
+        return f"{wins}-{losses} in last {len(results)}{streak_note}"
+    except Exception as e:
+        print(f"[context_data] recent form lookup failed for {team_name}: {e}")
+        return None
+
+
+def get_probable_pitcher_note(away_team, home_team):
+    """
+    MLB only: today's probable starting pitchers and their ERA for both
+    teams, straight from ESPN's public scoreboard (a free "probables"
+    field on each competitor -- confirmed live 2026-09-09, no API key
+    needed). This was the #1 signal in the user's own manual picks
+    ("Cam Schlittler 2.17 ERA vs Patrick Sandoval 4.58 ERA" style
+    reasoning shows up over and over in their betting history) --
+    informational for now, same as injuries/weather. None if today's
+    game or a probable pitcher isn't listed for either side.
+    """
+    try:
+        events = get_scoreboard("mlb")
+        away_norm, home_norm = _normalize(away_team), _normalize(home_team)
+        for e in events:
+            comp = e.get("competitions", [{}])[0]
+            teams_here = {_normalize(c.get("team", {}).get("displayName", "")) for c in comp.get("competitors", [])}
+            teams_here |= {_normalize(c.get("team", {}).get("shortDisplayName", "")) for c in comp.get("competitors", [])}
+            if not ((away_norm in teams_here or any(away_norm in t or t in away_norm for t in teams_here if t))
+                    and (home_norm in teams_here or any(home_norm in t or t in home_norm for t in teams_here if t))):
+                continue
+
+            parts = []
+            for c in comp.get("competitors", []):
+                probables = c.get("probables") or []
+                if not probables:
+                    continue
+                p = probables[0]
+                name = p.get("athlete", {}).get("displayName")
+                era = next((s.get("displayValue") for s in p.get("statistics", []) if s.get("name") == "ERA"), None)
+                team_name = c.get("team", {}).get("shortDisplayName") or c.get("team", {}).get("displayName")
+                if name:
+                    parts.append(f"{team_name}: {name}" + (f" ({era} ERA)" if era else ""))
+            if parts:
+                return "Starting pitchers -- " + " | ".join(parts)
+            return None
+        return None
+    except Exception as e:
+        print(f"[context_data] probable pitcher lookup failed for {away_team}/{home_team}: {e}")
+        return None
+
+
 def get_context_note(league, away_team, home_team):
     """
     Best-effort, human-readable note for a too-close-to-call game:
@@ -312,6 +416,17 @@ def get_context_note(league, away_team, home_team):
         return None  # UFC/ATP: no team-injury concept here
 
     lines = []
+
+    if league == "mlb":
+        pitcher_note = get_probable_pitcher_note(away_team, home_team)
+        if pitcher_note:
+            lines.append(pitcher_note)
+
+    for team in (away_team, home_team):
+        form = get_team_recent_form(league, team)
+        if form:
+            lines.append(f"{team} recent form: {form}")
+
     for team in (away_team, home_team):
         injuries = get_team_injuries(league, team)
         if injuries:
