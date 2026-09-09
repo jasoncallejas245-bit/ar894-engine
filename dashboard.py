@@ -285,7 +285,16 @@ def get_client():
 def dashboard():
     import paper_trading as pt
     import worker
+    import traceback
+    try:
+        return _dashboard_impl(pt, worker)
+    except Exception:
+        # TEMPORARY diagnostic -- pinpointing a live 500 error (2026-09-09).
+        # Will be removed the moment the real cause is found and fixed.
+        return "<pre>" + traceback.format_exc() + "</pre>", 500
 
+
+def _dashboard_impl(pt, worker):
     client = get_client()
 
     try:
