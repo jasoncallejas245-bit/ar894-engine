@@ -488,6 +488,60 @@ def fetch_sharpapi_odds(league):
     return all_rows
 
 
+def fetch_sharpapi_player_props(league):
+    """
+    Player-prop odds for one league from SharpAPI, mirroring
+    fetch_sharpapi_odds's pagination/rate-limit handling (see that
+    function's docstring for the details this reuses).
+
+    HONESTY UP FRONT (2026-09-09): SharpAPI's marketing site confirms a
+    "Player Props" market type exists, but the exact JSON field names for
+    it aren't in SharpAPI's public docs, and there's no way to test this
+    live from this machine (no local copy of the API key -- it only lives
+    in Railway's environment). The row shape parsed here
+    (paper_trading._parse_player_prop_row) is a best-effort guess at the
+    likely field names. If it's wrong, this safely returns rows that
+    _parse_player_prop_row can't parse (never a crash, never a guessed
+    value) -- the first successful raw row gets printed to the logs and
+    sent to Discord so a real fix can follow, instead of silently doing
+    nothing forever.
+    """
+    all_rows = []
+    cursor = None
+    logged_sample = False
+    for page_num in range(SHARPAPI_MAX_PAGES):
+        params = {"league": league, "market": "player_props", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        resp = None
+        for attempt in range(4):
+            resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
+            if resp.status_code != 429:
+                break
+            time.sleep(3)
+        if resp is None or resp.status_code != 200:
+            code = resp.status_code if resp is not None else "no response"
+            print(f"[sharpapi] {league} player_props failed: {code}")
+            return all_rows
+        body = resp.json()
+        rows = body.get("data", [])
+        if rows and not logged_sample:
+            print(f"[sharpapi] {league} player_props sample row (for schema verification): {rows[0]}")
+            logged_sample = True
+            send_discord(
+                DISCORD_WEBHOOK_UPDATES,
+                f"[props] {league} player_props first sample row, for verifying the field names match what the code expects:\n{rows[0]}",
+            )
+        all_rows.extend(rows)
+        pagination = body.get("pagination", {})
+        if not pagination.get("has_more"):
+            break
+        cursor = pagination.get("next_cursor")
+        if not cursor:
+            break
+    return all_rows
+
+
 def _longest_names_row(rows):
     """
     Picks whichever row (from any iterable of sportsbook rows) has the
@@ -1159,6 +1213,13 @@ def run_once(client, seen_trades, run_sports_scan=True):
             if new_picks:
                 cycle_new_picks.extend(new_picks)
             live_trading.track_live_candidates(league, rows, kalshi_events, safe_match_event)  # LIVE TRADING HOOK -- delete this line to remove the feature
+
+            # PrizePicks-style player prop picks -- only for leagues we can
+            # actually grade automatically (see paper_trading.py's prop
+            # section docstring for why NFL/NCAAF aren't included yet).
+            if league in pt.PROP_GRADABLE_LEAGUES:
+                prop_rows = fetch_sharpapi_player_props(league)
+                pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_UPDATES)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
@@ -1190,6 +1251,7 @@ def run_btc_and_resolution(client):
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_BTC)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_parlay_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.resolve_prop_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
 

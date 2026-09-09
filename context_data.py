@@ -453,3 +453,102 @@ def get_context_note(league, away_team, home_team):
     # later, but they're no longer called from here.
 
     return "\n".join(lines) if lines else None
+
+
+# ---------------------------------------------------------------------------
+# Player-prop grading (NEW 2026-09-09) -- for PrizePicks-style paper picks
+# (see paper_trading.py's prop-picks section). Only stats listed in
+# _BOXSCORE_STAT_LABELS can be auto-graded; anything else safely comes
+# back as "can't determine this," never a guess. MLB's labels are
+# confirmed live against a real box score (2026-09-09). NBA/WNBA's are
+# NOT yet confirmed live -- best guess based on ESPN's typical format,
+# same "watch for errors, fix if wrong" approach used for adding NBA to
+# moneyline scanning.
+_BOXSCORE_STAT_LABELS = {
+    "mlb": {"hits": "H", "home_runs": "HR", "rbis": "RBI", "runs": "R", "walks": "BB", "strikeouts": "K"},
+    "nba": {"points": "PTS", "rebounds": "REB", "assists": "AST", "3-pointers made": "3PM", "steals": "STL", "blocks": "BLK"},
+    "wnba": {"points": "PTS", "rebounds": "REB", "assists": "AST", "3-pointers made": "3PM", "steals": "STL", "blocks": "BLK"},
+}
+
+
+def get_event_id_for_matchup(league, away_team, home_team):
+    """
+    Finds today's ESPN event id for a matchup by team-name matching
+    against the scoreboard -- used to later fetch that game's box score
+    for prop grading. None if no confident match (game not today, name
+    mismatch, etc). Never raises.
+    """
+    try:
+        events = get_scoreboard(league)
+        away_norm, home_norm = _normalize(away_team), _normalize(home_team)
+        for e in events:
+            comp = e.get("competitions", [{}])[0]
+            teams_here = set()
+            for c in comp.get("competitors", []):
+                teams_here.add(_normalize(c.get("team", {}).get("displayName", "")))
+                teams_here.add(_normalize(c.get("team", {}).get("shortDisplayName", "")))
+            if not ((away_norm in teams_here or any(away_norm in t or t in away_norm for t in teams_here if t))
+                    and (home_norm in teams_here or any(home_norm in t or t in home_norm for t in teams_here if t))):
+                continue
+            return e.get("id")
+        return None
+    except Exception as e:
+        print(f"[context_data] event id lookup failed for {away_team}/{home_team}: {e}")
+        return None
+
+
+def is_game_final(league, event_id):
+    """True only if ESPN currently reports this event as completed. Used
+    to gate prop grading so a mid-game box score is never mistaken for a
+    final one. Never raises (False on any failure -- treated as "not
+    confirmed final yet," not "definitely not final")."""
+    try:
+        events = get_scoreboard(league)
+        for e in events:
+            if str(e.get("id")) == str(event_id):
+                status = e.get("competitions", [{}])[0].get("status", {}).get("type", {})
+                return bool(status.get("completed"))
+        return False
+    except Exception as e:
+        print(f"[context_data] final-status check failed for event {event_id}: {e}")
+        return False
+
+
+def get_player_boxscore_stat(league, event_id, player_name, stat_type):
+    """
+    One player's final value for one stat_type (a key from
+    _BOXSCORE_STAT_LABELS[league]) in a finished game's ESPN box score.
+    Returns (value, found) -- found=False means "couldn't determine this"
+    (game not found, player not in the box score, stat type unsupported
+    for this league), NEVER "value is zero." Callers must never treat
+    found=False as a loss or a win -- it means "can't grade this leg."
+    """
+    path = ESPN_LEAGUE_PATHS.get(league)
+    label_map = _BOXSCORE_STAT_LABELS.get(league, {})
+    target_label = label_map.get(stat_type)
+    if not path or not target_label or not event_id:
+        return None, False
+    try:
+        data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary", params={"event": event_id})
+        box = data.get("boxscore", {})
+        target_norm = _normalize(player_name)
+        for team in box.get("players", []):
+            for stat_group in team.get("statistics", []):
+                labels = stat_group.get("labels", [])
+                if target_label not in labels:
+                    continue
+                idx = labels.index(target_label)
+                for entry in stat_group.get("athletes", []):
+                    name = entry.get("athlete", {}).get("displayName", "")
+                    name_norm = _normalize(name)
+                    if name_norm == target_norm or target_norm in name_norm or name_norm in target_norm:
+                        stats = entry.get("stats", [])
+                        if idx < len(stats):
+                            try:
+                                return float(stats[idx]), True
+                            except (TypeError, ValueError):
+                                return None, False
+        return None, False
+    except Exception as e:
+        print(f"[context_data] boxscore stat lookup failed for {player_name}/{stat_type}: {e}")
+        return None, False

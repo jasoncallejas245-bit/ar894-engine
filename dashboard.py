@@ -126,6 +126,9 @@ PAGE_TEMPLATE = """
       </div>
       <div class="bar"><div class="bar-fill" style="width:{{ (100 * c.sample / min_sample)|round(0, 'floor')|int if c.sample < min_sample else 100 }}%;"></div></div>
       <div class="sub">↑ It won't change its own settings until it has {{ min_sample }} finished bets to learn from — right now it's just gathering evidence.</div>
+      {% if c.note %}
+      <div class="sub" style="margin-top:8px; border-top:1px solid #21262d; padding-top:8px;">⚠ {{ c.note }}</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
@@ -314,6 +317,7 @@ def dashboard():
     ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
     btc_bank = bankroll.get("btc", {"balance": pt.PAPER_STARTING_BANKROLL})
     parlay_bank = bankroll.get("parlay", {"balance": pt.PAPER_STARTING_BANKROLL})
+    props_bank = bankroll.get("props", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
     min_sample = pt.MIN_SAMPLE_FOR_ADJUSTMENT
 
@@ -429,6 +433,27 @@ def dashboard():
             ],
             "sample": min(summary.get("parlay", {}).get("resolved", 0), min_sample),
             "note": "Kalshi has no parlay product -- this can never place a real trade, paper-only forever, purely to compare against single-position picks.",
+        },
+        {
+            "key": "props", "label": "PrizePicks-Style Player Props (Experimental, Paper-Only)",
+            "summary": summary.get("props", {"resolved": 0, "win_rate": None}),
+            "bankroll_balance": props_bank["balance"],
+            "bankroll_down": props_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
+            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - props_bank["balance"]),
+            "settings": [
+                {
+                    "label": "Legs per ticket",
+                    "value": f"{pt.PROP_LEG_COUNT}",
+                    "explanation": "Bundles this many different players' strongest sportsbook-consensus prop picks into one all-or-nothing ticket, PrizePicks Power-Play style.",
+                },
+                {
+                    "label": "Minimum consensus required",
+                    "value": f"{pt.PROP_MIN_CONSENSUS_PROB*100:.0f}%",
+                    "explanation": "Only takes a side if sportsbooks collectively lean at least this hard toward it -- skips true toss-up props.",
+                },
+            ],
+            "sample": min(summary.get("props", {}).get("resolved", 0), min_sample),
+            "note": "Uses sportsbook consensus lines, not PrizePicks' own exact numbers -- PrizePicks has no public API. Only MLB/NBA/WNBA get auto-graded against real box scores (NBA/WNBA unverified); a ticket that can't be confirmed either way shows as \"needs manual check\" instead of a guess.",
         },
     ]
 

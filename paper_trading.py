@@ -58,6 +58,7 @@ def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
 def load_paper_trades():
     data = safe_read_json(PAPER_TRADES_FILE, {"moneyline": [], "btc": []})
     data.setdefault("parlay", [])
+    data.setdefault("props", [])
     return data
 
 
@@ -1041,7 +1042,7 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "btc", "parlay"]:
+    for category in ["moneyline", "btc", "parlay", "props"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -1413,3 +1414,246 @@ def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
             save_paper_trades(paper_data)
     except Exception as e:
         print(f"[paper_trading] resolve_parlay_paper_trades error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# PrizePicks-style player prop picks (NEW 2026-09-09, at the user's request)
+#
+# HONESTY UP FRONT: PrizePicks has no public API at all -- there's no free
+# way to pull PrizePicks' own exact lines. This uses SharpAPI's own
+# player-prop consensus lines instead (a market SharpAPI's site confirms
+# it supports, already paid for and used elsewhere in this bot -- zero
+# new cost). The real question being tested -- "does picking the side
+# sportsbooks lean hardest toward actually win more than a coinflip" --
+# is the same real test either way, but PrizePicks' literal number for a
+# given player might differ slightly from the consensus line used here.
+# If this proves out on real data, upgrading to PrizePicks' actual lines
+# would need a paid third-party feed -- NOT added without asking first.
+#
+# Grading is never a guess (see context_data.get_player_boxscore_stat):
+# MLB is confirmed live against a real box score. NBA/WNBA are included
+# but UNVERIFIED -- same safe-fail approach as adding NBA to moneyline.
+# NFL/NCAAF are deliberately left out for now -- ESPN's box score can
+# list more than one "yards" stat per player (passing/rushing/receiving)
+# and getting that wrong would silently grade a pick incorrectly, which
+# is worse than not grading it at all.
+# ---------------------------------------------------------------------------
+PROP_PICKS_ENABLED = os.getenv("PROP_PICKS_PAPER_ENABLED", "true").lower() == "true"
+PROP_LEG_COUNT = int(os.getenv("PROP_LEG_COUNT", "4"))
+PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.55"))
+PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba"}
+
+
+def _parse_player_prop_row(row):
+    """
+    Best-effort extraction from one SharpAPI player-prop row. Tries a
+    few plausible field-name variants since the exact schema isn't
+    confirmed (see fetch_sharpapi_player_props's docstring) -- returns
+    None rather than guessing if it can't confidently parse the row.
+    """
+    try:
+        player = row.get("player") or row.get("player_name") or row.get("athlete") or row.get("selection_player")
+        stat = row.get("stat") or row.get("stat_type") or row.get("market_subtype") or row.get("prop_type")
+        line = row.get("line")
+        if line is None:
+            line = row.get("point")
+        if line is None:
+            line = row.get("handicap")
+        side = row.get("side") or row.get("selection") or row.get("outcome")
+        prob = row.get("implied_probability")
+        if prob is None:
+            prob = row.get("probability")
+        if not player or not stat or line is None or not side:
+            return None
+        side_norm = str(side).strip().lower()
+        if side_norm not in ("over", "under"):
+            return None
+        return {
+            "player": str(player).strip(),
+            "stat_type": str(stat).strip().lower(),
+            "line": float(line),
+            "side": side_norm,
+            "prob": float(prob) if prob is not None else None,
+            "sportsbook": row.get("sportsbook"),
+            "event_id": row.get("event_id"),
+            "away_team": row.get("away_team"),
+            "home_team": row.get("home_team"),
+        }
+    except Exception:
+        return None
+
+
+def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
+    """
+    Runs once per cycle per gradable league, fed that league's raw
+    SharpAPI player-prop rows. Groups parsed rows by (player, stat_type,
+    line, side), averages the implied probability across whichever
+    sportsbooks quote it, keeps only sides clearing PROP_MIN_CONSENSUS_PROB,
+    picks the strongest PROP_LEG_COUNT (one leg per player, so a ticket
+    reads like a real PrizePicks slip -- different players, not the same
+    guy twice), and paper-tracks them as one all-or-nothing ticket, same
+    structure as parlay mode. Never raises.
+    """
+    if not PROP_PICKS_ENABLED or league not in PROP_GRADABLE_LEAGUES:
+        return None
+    try:
+        parsed = [p for p in (_parse_player_prop_row(r) for r in prop_rows) if p]
+        if not parsed:
+            return None
+
+        groups = {}
+        for p in parsed:
+            key = (p["player"], p["stat_type"], p["line"], p["side"])
+            groups.setdefault(key, []).append(p)
+
+        candidates = []
+        for (player, stat_type, line, side), rows in groups.items():
+            probs = [r["prob"] for r in rows if r["prob"] is not None]
+            if not probs:
+                continue
+            avg_prob = sum(probs) / len(probs)
+            if avg_prob < PROP_MIN_CONSENSUS_PROB:
+                continue
+            sample = rows[0]
+            candidates.append({
+                "player": player, "stat_type": stat_type, "line": line, "side": side,
+                "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
+                "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
+                "home_team": sample.get("home_team"), "league": league,
+            })
+
+        if len(candidates) < PROP_LEG_COUNT:
+            return None
+
+        candidates.sort(key=lambda c: c["consensus_prob"], reverse=True)
+        legs, used_players = [], set()
+        for c in candidates:
+            if c["player"] in used_players:
+                continue
+            legs.append(c)
+            used_players.add(c["player"])
+            if len(legs) == PROP_LEG_COUNT:
+                break
+        if len(legs) < PROP_LEG_COUNT:
+            return None
+
+        for leg in legs:
+            if not leg.get("event_id"):
+                leg["event_id"] = context_data.get_event_id_for_matchup(league, leg.get("away_team"), leg.get("home_team"))
+
+        ticket = {
+            "ticket_id": f"prop-{datetime.now().isoformat()}",
+            "league": league,
+            "legs": legs,
+            "stake_dollars": PAPER_STAKE_DOLLARS,
+            "picked_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+        paper_data = load_paper_trades()
+        paper_data.setdefault("props", []).append(ticket)
+        save_paper_trades(paper_data)
+
+        if send_discord_fn and webhook:
+            leg_lines = "\n".join(
+                f"  - {l['player']} {l['side'].upper()} {l['line']} {l['stat_type']} ({l['consensus_prob']*100:.0f}%)"
+                for l in legs
+            )
+            send_discord_fn(
+                webhook,
+                f"[PAPER PRIZEPICKS-STYLE] New {len(legs)}-leg {league.upper()} ticket:\n{leg_lines}\n"
+                f"(Paper only -- uses sportsbook consensus lines, not PrizePicks' own numbers -- see code comments)"
+            )
+        return ticket
+    except Exception as e:
+        print(f"[paper_trading] maybe_make_prop_pick error: {e}")
+        return None
+
+
+def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
+    """
+    Checks each pending prop ticket's legs against real final box-score
+    stats once every leg's game is confirmed final. All-or-nothing, same
+    as a real PrizePicks Power Play: every leg has to hit. If a leg can't
+    be graded (game not final, player not found, unsupported stat), the
+    WHOLE ticket is marked "needs_manual_check" rather than guessed at --
+    unless another leg has ALREADY definitively missed, since one busted
+    leg fails the ticket regardless of the others. Never raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        changed = False
+
+        for ticket in paper_data.get("props", []):
+            if ticket["status"] != "pending":
+                continue
+
+            league = ticket["league"]
+            any_confirmed_miss = False
+            any_ungradable = False
+            hit_count = 0
+
+            for leg in ticket["legs"]:
+                event_id = leg.get("event_id")
+                if not event_id or not context_data.is_game_final(league, event_id):
+                    any_ungradable = True
+                    continue
+                value, found = context_data.get_player_boxscore_stat(league, event_id, leg["player"], leg["stat_type"])
+                if not found:
+                    any_ungradable = True
+                    continue
+                hit = (value > leg["line"]) if leg["side"] == "over" else (value < leg["line"])
+                leg["actual_value"] = value
+                leg["hit"] = hit
+                if hit:
+                    hit_count += 1
+                else:
+                    any_confirmed_miss = True
+
+            if any_confirmed_miss:
+                ticket["status"] = "lost"
+            elif any_ungradable:
+                # Could still be pending (games not final yet) or stuck
+                # ungradable (bad player-name match, unsupported stat).
+                # Leave it pending unless every leg's game is at least
+                # final -- only then call it "needs_manual_check".
+                all_final = all(
+                    leg.get("event_id") and context_data.is_game_final(league, leg["event_id"])
+                    for leg in ticket["legs"]
+                )
+                if all_final:
+                    ticket["status"] = "needs_manual_check"
+                else:
+                    continue
+            else:
+                ticket["status"] = "won"
+
+            ticket["resolved_at"] = datetime.now().isoformat()
+            changed = True
+
+            if ticket["status"] in ("won", "lost"):
+                pnl = ticket["stake_dollars"] * 3 if ticket["status"] == "won" else -ticket["stake_dollars"]
+                ticket["hypothetical_pnl"] = round(pnl, 2)
+                # NOTE: the 3x payout above is a rough stand-in for a
+                # real PrizePicks-style payout multiplier (varies by
+                # leg count and pick type in real life) -- good enough
+                # to track "up or down," not a promise of the real payout.
+                balance, is_down, down_by = record_paper_bankroll_change(
+                    "props", pnl, ticket["ticket_id"], note=f"{len(ticket['legs'])}-leg prop ticket {ticket['status']}",
+                )
+                if send_discord_fn and webhook:
+                    send_discord_fn(
+                        webhook,
+                        f"[PRIZEPICKS-STYLE {'HIT' if ticket['status']=='won' else 'BUSTED'}] "
+                        f"{len(ticket['legs'])}-leg {league.upper()} ticket: ${pnl:+.2f}. Props paper bankroll: ${balance:.2f}",
+                    )
+            elif send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[PRIZEPICKS-STYLE] {len(ticket['legs'])}-leg {league.upper()} ticket needs a manual check -- "
+                    f"couldn't auto-grade every leg (unsupported stat or player-name mismatch).",
+                )
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] resolve_prop_paper_trades error: {e}")
