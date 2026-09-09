@@ -217,9 +217,10 @@ PAGE_TEMPLATE = """
 
     <div class="card">
       <div class="row"><span class="label">Money in your Kalshi account</span><span>${{ "%.2f"|format(balance) }}</span></div>
+      <div class="sub" style="margin:-6px 0 8px;">This is your TRUE account total, straight from Kalshi -- it already includes any bets you place manually on the Kalshi app yourself, not just the bot's trades.</div>
       <div class="row"><span class="label">How much the bot is allowed to use</span><span>${{ "%.2f"|format(available_budget) }}</span></div>
       <div class="row"><span class="label">Tied up in open real bets right now</span><span>${{ "%.2f"|format(committed) }}</span></div>
-      <div class="row"><span class="label">Real profit/loss so far (this bot only)</span>
+      <div class="row"><span class="label">Real profit/loss so far (bot's own bets only, excludes your manual bets)</span>
         <span class="{{ 'green' if realized_profit >= 0 else 'red' }}">${{ "%.2f"|format(realized_profit) }}</span>
       </div>
       {% if trading_halted %}
