@@ -725,7 +725,22 @@ def get_btc_fair_prob_estimate():
     return settings.get("btc_win_rate")
 
 
+# Paused 2026-09-09 at the user's request -- BTC paper trading has a full,
+# mature sample (256 finished bets) that came back net-negative even after
+# real fixes (early-exit threshold, edge-scaled sizing, momentum-window
+# self-tuning). Rather than keep tuning the same "recent price direction"
+# signal, new BTC picks are paused so effort/attention shifts to
+# moneyline, which still needs real volume to reach a verdict. Existing
+# pending BTC trades still get tracked and resolved normally below (see
+# run_btc_and_resolution in worker.py) -- nothing gets stuck half-open.
+# Flip back on with BTC_PAPER_NEW_PICKS_ENABLED=true if/when a genuinely
+# different BTC signal is worth testing.
+BTC_PAPER_NEW_PICKS_ENABLED = os.getenv("BTC_PAPER_NEW_PICKS_ENABLED", "false").lower() == "true"
+
+
 def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
+    if not BTC_PAPER_NEW_PICKS_ENABLED:
+        return None
     price = get_btc_spot_price()
     if price is None:
         return None

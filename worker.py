@@ -1117,18 +1117,25 @@ def run_once(client, seen_trades, run_sports_scan=True):
     # Real trading only for REAL_TRADING_LEAGUES; every league still gets
     # paper-traded (unlimited volume, full logging) regardless.
     #
-    # Moneyline paper trading only had 6 finished bets as of 2026-09-09 --
-    # nowhere near the 30 needed for the learning step to do anything, and
-    # far too small a sample to judge the strategy at all. Real trading is
-    # off, so there's zero real-money cost to widening the net a bit in
-    # PAPER ONLY to collect that data faster. This stays a few points
-    # below whatever the adaptive bar currently is (never below its floor,
-    # so a bar the learning system already raised because a band proved to
-    # lose money stays respected) and does NOT touch get_favorite_min_prob()
-    # / MIN_EDGE_PCT above, which is what real trading uses -- if real
-    # trading is ever turned on for these leagues, it is unaffected by this.
-    paper_favorite_min_prob = max(0.50, pt.get_effective_favorite_min_prob() - 0.03)
-    paper_min_edge_pct = 1.5
+    # MAX DATA COLLECTION MODE for paper moneyline (2026-09-09, at the
+    # user's explicit request to speed up data-gathering since real
+    # trading is 100% off anyway -- zero real-money cost either way).
+    # favorite_min_prob=0.50 means it takes literally every game where
+    # both sides have real 2-way odds and a Kalshi match (whichever side
+    # is even slightly favored, no matter how close), and min_edge_pct=0
+    # means it no longer requires a detected mispricing edge either.
+    # This does NOT touch get_favorite_min_prob() / MIN_EDGE_PCT above,
+    # which is what REAL trading uses -- if real trading is ever turned
+    # on for a league, it still requires an actual edge, unaffected by
+    # this. Toggle back to a narrower net later with
+    # AGGRESSIVE_PAPER_DATA_COLLECTION=false if this turns out to be too
+    # noisy to learn from (e.g. coin-flip games swamping real signal).
+    if os.getenv("AGGRESSIVE_PAPER_DATA_COLLECTION", "true").lower() == "true":
+        paper_favorite_min_prob = 0.50
+        paper_min_edge_pct = 0.0
+    else:
+        paper_favorite_min_prob = max(0.50, pt.get_effective_favorite_min_prob() - 0.03)
+        paper_min_edge_pct = 1.5
     # Collected across every league this cycle, then handed to the parlay
     # builder once the loop finishes -- see paper_trading.maybe_make_parlay_pick.
     cycle_new_picks = []
