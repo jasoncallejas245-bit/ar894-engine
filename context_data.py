@@ -447,9 +447,9 @@ def get_context_note(league, away_team, home_team):
         if injuries:
             lines.append(f"{team} injuries: " + "; ".join(injuries))
 
-    lat, lon = get_venue_latlon(league, home_team)
-    forecast = get_venue_forecast(lat, lon)
-    if forecast:
-        lines.append(f"Weather at {home_team}: {forecast}")
+    # Weather removed 2026-09-09 at the user's request -- they felt it
+    # wasn't adding anything useful. get_venue_latlon/get_venue_forecast
+    # are left defined below (unused) in case this is worth revisiting
+    # later, but they're no longer called from here.
 
     return "\n".join(lines) if lines else None

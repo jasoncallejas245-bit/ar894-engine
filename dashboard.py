@@ -132,7 +132,7 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Close Calls — Extra Info</h3>
-    <div class="sub" style="margin-bottom:10px;">These ARE real picks the bot made (not a separate or pending category) — just the subset that only barely cleared the "safe enough to bet" bar, basically a coin flip with a slight edge. Every pick (including the clear favorites, shown below in "All Recent Picks") now gets the same weather/injury/matchup/pitcher context — this card just highlights the ones where that context mattered most.</div>
+    <div class="sub" style="margin-bottom:10px;">These ARE real picks the bot made (not a separate or pending category) — just the subset that only barely cleared the "safe enough to bet" bar, basically a coin flip with a slight edge. Every pick (including the clear favorites, shown below in "All Recent Picks") now gets the same injury/matchup/pitcher context — this card just highlights the ones where that context mattered most.</div>
     {% if too_close_picks %}
       {% for p in too_close_picks[:6] %}
       <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
@@ -142,7 +142,7 @@ PAGE_TEMPLATE = """
           {% if p.context_note %}
             <div class="sub" style="white-space:pre-line; margin-top:4px;">{{ p.context_note }}</div>
           {% else %}
-            <div class="sub" style="margin-top:4px;">Nothing notable found — no key injuries, normal weather.</div>
+            <div class="sub" style="margin-top:4px;">Nothing notable found.</div>
           {% endif %}
         </div>
       </div>
