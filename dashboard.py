@@ -331,6 +331,16 @@ def dashboard():
                     "value": f"On, at {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied" if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else "Off",
                     "explanation": ml_early_exit_note,
                 },
+                {
+                    "label": "Practice-only data collection",
+                    "value": f"Also picking down to {max(0.50, favorite_current - 0.03)*100:.0f}% likely to win",
+                    "explanation": (
+                        "Real trading is off, so there's no real-money cost to also taking a few games just "
+                        "below the normal bar above -- purely to build up a bigger sample faster while it's "
+                        "safe to. These extra picks don't count toward the bar-raising safety check above them; "
+                        "they're just more data."
+                    ),
+                },
             ],
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
         },

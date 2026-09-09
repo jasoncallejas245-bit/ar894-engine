@@ -1104,6 +1104,20 @@ def run_once(client, seen_trades, run_sports_scan=True):
 
     # Real trading only for REAL_TRADING_LEAGUES; every league still gets
     # paper-traded (unlimited volume, full logging) regardless.
+    #
+    # Moneyline paper trading only had 6 finished bets as of 2026-09-09 --
+    # nowhere near the 30 needed for the learning step to do anything, and
+    # far too small a sample to judge the strategy at all. Real trading is
+    # off, so there's zero real-money cost to widening the net a bit in
+    # PAPER ONLY to collect that data faster. This stays a few points
+    # below whatever the adaptive bar currently is (never below its floor,
+    # so a bar the learning system already raised because a band proved to
+    # lose money stays respected) and does NOT touch get_favorite_min_prob()
+    # / MIN_EDGE_PCT above, which is what real trading uses -- if real
+    # trading is ever turned on for these leagues, it is unaffected by this.
+    paper_favorite_min_prob = max(0.50, pt.get_effective_favorite_min_prob() - 0.03)
+    paper_min_edge_pct = 1.5
+
     for league in LEAGUE_SERIES.keys():
         try:
             print(f"[{league}] fetching odds...")
@@ -1116,7 +1130,10 @@ def run_once(client, seen_trades, run_sports_scan=True):
 
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
-            pt.make_moneyline_paper_picks(league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES)
+            pt.make_moneyline_paper_picks(
+                league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES,
+                min_edge_pct=paper_min_edge_pct, favorite_min_prob=paper_favorite_min_prob,
+            )
             live_trading.track_live_candidates(league, rows, kalshi_events, safe_match_event)  # LIVE TRADING HOOK -- delete this line to remove the feature
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")

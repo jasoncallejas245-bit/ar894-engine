@@ -865,17 +865,27 @@ def track_btc_contract_prices(client):
         print(f"[paper_trading] track_btc_contract_prices error: {e}")
 
 
-# Backed by real tracked-price data (2026-09-09): across 38 BTC paper trades
-# with a recorded contract price path, holding every position to full 15-min
-# settlement netted -$9.40 total. Simulating "cash out the moment the
-# contract's own bid first reaches this price" on those same 38 trades
-# netted +$11 to +$20 instead -- a handful of positions that spiked to 90%+
-# implied probability and then fully reversed to a loss account for nearly
-# all of the difference. Small sample, so this is a live experiment, not a
-# proven edge -- paper-only (real BTC trading is off) so it builds forward
-# evidence before anything is ever risked for real. Tune or disable via env.
+# Re-backtested 2026-09-09 on the full 250-trade resolved history (99 with
+# a recorded contract price path). Findings that justify this threshold:
+#   - Holding EVERY position to full expiry (no early exit at all) has a
+#     48.2% win rate over 224 trades and nets -$139.23 -- barely worse than
+#     a coin flip, and a genuine loser after fees. The momentum signal
+#     alone does not have a durable edge; it's gotten WORSE over time
+#     (first ~125 resolved trades: 60% win / -$5.34; most recent ~125:
+#     47.2% win / -$23.39).
+#   - Early exits are the only reason the account isn't deeply negative:
+#     +$110.51 across 26 trades at the old 80% threshold.
+#   - Re-running the threshold sweep on the 73 trades that a 80% bar did
+#     NOT catch (their own recorded price paths, so this is real data, not
+#     a guess) shows 65% would have lost less than every other tested
+#     threshold (55-95%): -$100.74 vs. -$134.52 at 80%. Still a loss on
+#     that specific hard-to-catch subset -- lowering the bar does not make
+#     the strategy profitable, it just leaks less on the trades the old
+#     bar was missing. Full fix requires the underlying signal to improve,
+#     not just this threshold; that's the next thing to investigate.
+# Paper-only (real BTC trading is off) -- tune or disable via env.
 BTC_PAPER_EARLY_EXIT_ENABLED = os.getenv("BTC_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
-BTC_PAPER_EARLY_EXIT_PROB = float(os.getenv("BTC_PAPER_EARLY_EXIT_PROB", "0.80"))
+BTC_PAPER_EARLY_EXIT_PROB = float(os.getenv("BTC_PAPER_EARLY_EXIT_PROB", "0.65"))
 
 
 def check_and_close_btc_paper_early(send_discord_fn=None, webhook=None):
