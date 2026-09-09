@@ -117,7 +117,10 @@ LEAGUE_SERIES = {
     "ncaaf": "KXNCAAFGAME",
     "mlb": "KXMLBGAME",
     "ufc": "KXUFCFIGHT",
-    "atp": "KXATPMATCH",
+    # "atp": "KXATPMATCH",  # dropped 2026-09-09 at the user's request --
+    # tennis (best-of-3/5, momentum swings mid-match) judged too volatile
+    # for this strategy. Existing ATP paper trades stay in the historical
+    # data; this just stops any new ones from being made.
     # Added while WNBA is still in season (regular season/playoffs run into
     # October) -- confirmed SharpAPI carries "wnba" as a basketball league,
     # and confirmed Kalshi has WNBA game markets. The exact series ticker
@@ -129,6 +132,15 @@ LEAGUE_SERIES = {
     # Railway logs after deploy for "[wnba] fetching odds..." followed by a
     # nonzero markets count to confirm it's actually finding real markets.
     "wnba": "KXWNBAGAME",
+    # Added 2026-09-09 at the user's request, ahead of the season starting,
+    # so paper data collection begins on day one instead of catching up
+    # late. KXNBAGAME confirmed live and real on Kalshi's own site
+    # (kalshi.com/markets/kxnbagame showed a real Boston vs Detroit market)
+    # -- SharpAPI's "nba" league key was NOT independently verified (no way
+    # to check without burning a real API call), so same safe-fail note as
+    # WNBA applies: if SharpAPI doesn't recognize "nba", this league just
+    # quietly produces zero rows/picks rather than erroring.
+    "nba": "KXNBAGAME",
     # "wta": "KXWTAMATCH",  # dropped: SharpAPI/Kalshi cover different WTA
     # tournament tiers right now, zero overlap -- revisit later if that changes
 }
@@ -1117,6 +1129,9 @@ def run_once(client, seen_trades, run_sports_scan=True):
     # trading is ever turned on for these leagues, it is unaffected by this.
     paper_favorite_min_prob = max(0.50, pt.get_effective_favorite_min_prob() - 0.03)
     paper_min_edge_pct = 1.5
+    # Collected across every league this cycle, then handed to the parlay
+    # builder once the loop finishes -- see paper_trading.maybe_make_parlay_pick.
+    cycle_new_picks = []
 
     for league in LEAGUE_SERIES.keys():
         try:
@@ -1130,13 +1145,20 @@ def run_once(client, seen_trades, run_sports_scan=True):
 
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
-            pt.make_moneyline_paper_picks(
+            new_picks = pt.make_moneyline_paper_picks(
                 league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES,
                 min_edge_pct=paper_min_edge_pct, favorite_min_prob=paper_favorite_min_prob,
             )
+            if new_picks:
+                cycle_new_picks.extend(new_picks)
             live_trading.track_live_candidates(league, rows, kalshi_events, safe_match_event)  # LIVE TRADING HOOK -- delete this line to remove the feature
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
+
+    try:
+        pt.maybe_make_parlay_pick(cycle_new_picks, send_discord, DISCORD_WEBHOOK_UPDATES)
+    except Exception as e:
+        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"parlay builder error: {e}")
 
     run_btc_and_resolution(client)
     _record_cycle_status("finished")
@@ -1160,6 +1182,7 @@ def run_btc_and_resolution(client):
         pt.check_and_close_moneyline_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's
         pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_BTC)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.resolve_parlay_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
 

@@ -21,6 +21,7 @@ Every public function here is best-effort and NEVER raises -- a bad
 team-name match or a flaky upstream API just means an empty/None result,
 never a crash that takes down the trading loop over this.
 """
+import os
 import requests
 from datetime import date, datetime, timezone
 
@@ -29,6 +30,7 @@ ESPN_LEAGUE_PATHS = {
     "ncaaf": "football/college-football",
     "mlb": "baseball/mlb",
     "wnba": "basketball/wnba",
+    "nba": "basketball/nba",
     # UFC/ATP are individual-athlete sports with no team-injury-report
     # (or "tied score") concept on ESPN's team/scoreboard endpoints --
     # deliberately not included here.
@@ -46,6 +48,7 @@ CORE_SPORT_LEAGUE = {
     "nfl": ("football", "nfl"),
     "ncaaf": ("football", "college-football"),
     "mlb": ("baseball", "mlb"),
+    "nba": ("basketball", "nba"),
 }
 
 # Confirmed live: a resolved/non-injury entry reports status "Active".
@@ -300,7 +303,17 @@ def get_venue_forecast(lat, lon):
         return None
 
 
-def get_team_recent_form(league, team_name, num_games=10):
+# How many recent games "recent form" looks back over. 10 is the standard
+# "L10" convention already used across sports betting (a familiar, fixed
+# reference point) and smooths out one fluky game or two; going lower
+# (5) reacts faster to a real hot/cold streak but is noisier -- a single
+# extra-innings loss swings a 5-game record a lot more than a 10-game
+# one. Tunable without a code change via RECENT_FORM_NUM_GAMES if 10
+# feels wrong once there's more data to judge it by.
+RECENT_FORM_NUM_GAMES = int(os.getenv("RECENT_FORM_NUM_GAMES", "10"))
+
+
+def get_team_recent_form(league, team_name, num_games=None):
     """
     "How has this team been playing lately" -- a real signal (2026-09-09):
     going through the user's own manual betting history (a year+ of
@@ -315,6 +328,8 @@ def get_team_recent_form(league, team_name, num_games=10):
     schedule endpoint -- the same free-API pattern as the rest of this
     module. None if the team can't be matched or the lookup fails.
     """
+    if num_games is None:
+        num_games = RECENT_FORM_NUM_GAMES
     team_id = _find_team_id(league, team_name)
     path = ESPN_LEAGUE_PATHS.get(league)
     if not team_id or not path:

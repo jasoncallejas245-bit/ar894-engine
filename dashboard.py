@@ -132,7 +132,7 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Close Calls — Extra Info</h3>
-    <div class="sub" style="margin-bottom:10px;">These are picks that only barely qualified as a "safe enough" bet — basically a coin flip with a slight edge. For those, it checks injuries and weather (free, real data) so there's more to go on than just the odds.</div>
+    <div class="sub" style="margin-bottom:10px;">These ARE real picks the bot made (not a separate or pending category) — just the subset that only barely cleared the "safe enough to bet" bar, basically a coin flip with a slight edge. Every pick (including the clear favorites, shown below in "All Recent Picks") now gets the same weather/injury/matchup/pitcher context — this card just highlights the ones where that context mattered most.</div>
     {% if too_close_picks %}
       {% for p in too_close_picks[:6] %}
       <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
@@ -149,6 +149,26 @@ PAGE_TEMPLATE = """
       {% endfor %}
     {% else %}
       <div class="muted">None right now — no picks have been this close to a coin flip yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>All Recent Picks</h3>
+    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made.</div>
+    {% if all_recent_picks %}
+      {% for p in all_recent_picks[:15] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · entry ${{ "%.2f"|format(p.entry_price or 0) }} · {{ p.status }}</div>
+        </div>
+        <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if p.hypothetical_pnl is not none %}${{ "%.2f"|format(p.hypothetical_pnl) }}{% else %}pending{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No picks yet.</div>
     {% endif %}
   </div>
 
@@ -292,6 +312,7 @@ def dashboard():
     bankroll = pt.load_paper_bankroll()
     ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
     btc_bank = bankroll.get("btc", {"balance": pt.PAPER_STARTING_BANKROLL})
+    parlay_bank = bankroll.get("parlay", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
     min_sample = pt.MIN_SAMPLE_FOR_ADJUSTMENT
 
@@ -387,10 +408,32 @@ def dashboard():
             ],
             "sample": min(adaptive.get("btc_sample_size", 0), min_sample),
         },
+        {
+            "key": "parlay", "label": "Parlay Mode (Experimental, Paper-Only Forever)",
+            "summary": summary.get("parlay", {"resolved": 0, "win_rate": None}),
+            "bankroll_balance": parlay_bank["balance"],
+            "bankroll_down": parlay_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
+            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - parlay_bank["balance"]),
+            "settings": [
+                {
+                    "label": "Legs per ticket",
+                    "value": f"{pt.PARLAY_LEG_COUNT}",
+                    "explanation": "Bundles this many of the cycle's strongest qualifying single-position picks into one all-or-nothing combined ticket, mirroring how the user builds parlays manually.",
+                },
+                {
+                    "label": "Heaviest favorite allowed per leg",
+                    "value": f"${pt.PARLAY_MAX_LEG_PRICE:.2f}",
+                    "explanation": "A favorite priced above this eats parlay payout value without adding much safety, so it's skipped for the next-best leg -- a real pattern found in the user's own betting history.",
+                },
+            ],
+            "sample": min(summary.get("parlay", {}).get("resolved", 0), min_sample),
+            "note": "Kalshi has no parlay product -- this can never place a real trade, paper-only forever, purely to compare against single-position picks.",
+        },
     ]
 
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
     too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
+    all_recent_picks = list(reversed(sorted(all_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
     recent_wins = []
     for p in all_moneyline_picks:
@@ -558,6 +601,7 @@ def dashboard():
         too_close_picks=too_close_picks,
         recent_wins=recent_wins,
         pending_picks=pending_picks,
+        all_recent_picks=all_recent_picks,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
         trading_halted=trading_halted,

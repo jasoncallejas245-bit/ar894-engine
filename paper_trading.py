@@ -56,7 +56,9 @@ def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
 
 
 def load_paper_trades():
-    return safe_read_json(PAPER_TRADES_FILE, {"moneyline": [], "btc": []})
+    data = safe_read_json(PAPER_TRADES_FILE, {"moneyline": [], "btc": []})
+    data.setdefault("parlay", [])
+    return data
 
 
 def save_paper_trades(data):
@@ -423,12 +425,16 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         # why a "too close" pick did or didn't work out. This is informational
         # only right now -- it does NOT change the pick or the probability.
         is_too_close = favorite_min_prob <= best_pick["market_probability"] < (favorite_min_prob + CLOSE_GAME_BAND)
+        # Was close-call-only; now pulled for every pick at the user's
+        # request (2026-09-09) -- they check weather/injuries/matchups/
+        # pitcher on every bet they place themselves, not just coin-flip
+        # ones, so AR894's picks now carry the same context regardless of
+        # how confident the edge looked.
         context_note = None
-        if is_too_close:
-            try:
-                context_note = context_data.get_context_note(league, away_team, home_team)
-            except Exception as e:
-                print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
+        try:
+            context_note = context_data.get_context_note(league, away_team, home_team)
+        except Exception as e:
+            print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
 
         pick = {
             "league": league.upper(),
@@ -1020,7 +1026,7 @@ def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "btc"]:
+    for category in ["moneyline", "btc", "parlay"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -1243,3 +1249,152 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
 
     save_adaptive_settings(settings)
     return settings
+
+
+# ---------------------------------------------------------------------------
+# Parlay paper trading (NEW 2026-09-09, at the user's explicit request)
+#
+# IMPORTANT LIMITATION, stated up front: Kalshi has no parlay/combo-bet
+# product at all -- every Kalshi market is a single, independent yes/no
+# contract. This mode can NEVER become a real-money trading path on
+# Kalshi, no matter how good the paper results look. It exists purely to
+# test, on paper, whether the user's own manual approach (stacking 3+
+# moneyline favorites into one combined ticket for a bigger payout
+# multiplier, the pattern found in their Gemini betting history) actually
+# outperforms AR894's normal one-position-at-a-time approach. If this
+# strategy is ever worth acting on for real, it would have to be through a
+# platform that actually supports parlays (e.g. PrizePicks), not this bot.
+# ---------------------------------------------------------------------------
+
+PARLAY_ENABLED = os.getenv("PARLAY_PAPER_ENABLED", "true").lower() == "true"
+PARLAY_LEG_COUNT = int(os.getenv("PARLAY_LEG_COUNT", "3"))
+# Mirrors a real lesson from the user's own betting history: a leg priced
+# heavier than this (e.g. a -300 favorite, ~0.75+ on Kalshi) eats up parlay
+# payout value without adding much safety, so it gets skipped in favor of
+# the next-best qualifying leg instead.
+PARLAY_MAX_LEG_PRICE = float(os.getenv("PARLAY_MAX_LEG_PRICE", "0.75"))
+
+
+def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
+    """
+    Runs once per sports-scan cycle in worker.py, fed that cycle's newly
+    made single-position picks (across every league) as candidate_picks.
+    If there are enough qualifying legs (real edge, not too heavy a
+    favorite -- see PARLAY_MAX_LEG_PRICE), bundles the strongest
+    PARLAY_LEG_COUNT of them into one combined paper parlay ticket,
+    tracked in its own "parlay" bankroll -- completely separate from
+    those same picks' own single-position tracking, which continues
+    exactly as before. One picked game can appear in both a single
+    position AND a parlay leg; they're independent records answering
+    different questions. Never raises.
+    """
+    if not PARLAY_ENABLED:
+        return None
+    try:
+        eligible = [
+            p for p in candidate_picks
+            if p.get("kalshi_ticker") and p.get("entry_price") and p["entry_price"] <= PARLAY_MAX_LEG_PRICE
+        ]
+        if len(eligible) < PARLAY_LEG_COUNT:
+            return None
+
+        eligible.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
+        legs = eligible[:PARLAY_LEG_COUNT]
+
+        combined_price = 1.0
+        for leg in legs:
+            combined_price *= leg["entry_price"]
+        combined_price = max(0.0001, combined_price)
+
+        contracts = max(1.0, PAPER_STAKE_DOLLARS / combined_price)
+        entry_fees = sum(_kalshi_taker_fee_dollars_local(leg["entry_price"], contracts) for leg in legs)
+
+        ticket = {
+            "ticket_id": f"parlay-{datetime.now().isoformat()}",
+            "legs": [
+                {
+                    "league": leg["league"], "picked_team": leg["picked_team"],
+                    "kalshi_ticker": leg["kalshi_ticker"], "event_id": leg.get("event_id"),
+                    "entry_price": leg["entry_price"], "edge_pct": leg.get("edge_pct"),
+                }
+                for leg in legs
+            ],
+            "combined_entry_price": round(combined_price, 6),
+            "contracts": contracts,
+            "entry_fees": round(entry_fees, 4),
+            "stake_dollars": round(combined_price * contracts, 4),
+            "picked_at": datetime.now().isoformat(),
+            "status": "pending",
+        }
+        paper_data = load_paper_trades()
+        paper_data["parlay"].append(ticket)
+        save_paper_trades(paper_data)
+
+        if send_discord_fn and webhook:
+            leg_lines = "\n".join(f"  - {l['picked_team']} ({l['league']}) @ ${l['entry_price']:.2f}" for l in legs)
+            potential = round(contracts * (1.0 - combined_price), 2)
+            send_discord_fn(
+                webhook,
+                f"[PAPER PARLAY] New {len(legs)}-leg ticket, ${ticket['stake_dollars']:.2f} to win ${potential:+.2f}:\n{leg_lines}\n"
+                f"(Paper only -- Kalshi has no real parlay product, this is comparison data only)"
+            )
+        return ticket
+    except Exception as e:
+        print(f"[paper_trading] maybe_make_parlay_pick error: {e}")
+        return None
+
+
+def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
+    """
+    Checks each pending parlay ticket's legs against that same cycle's
+    already-resolved single-position moneyline picks (matched by
+    kalshi_ticker) -- an all-or-nothing parlay: every leg has to have
+    resolved "won" for the ticket to win; any leg "lost" busts the whole
+    ticket, same as a real sportsbook parlay. Never raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        moneyline_by_ticker = {p.get("kalshi_ticker"): p for p in paper_data.get("moneyline", []) if p.get("kalshi_ticker")}
+        changed = False
+
+        for ticket in paper_data.get("parlay", []):
+            if ticket["status"] != "pending":
+                continue
+
+            leg_statuses = []
+            for leg in ticket["legs"]:
+                underlying = moneyline_by_ticker.get(leg["kalshi_ticker"])
+                leg_statuses.append(underlying["status"] if underlying else None)
+
+            if any(s is None for s in leg_statuses):
+                continue  # a leg's underlying pick vanished -- can't resolve, leave pending
+            if any(s == "pending" for s in leg_statuses):
+                continue  # still waiting on at least one leg
+
+            won = all(s == "won" for s in leg_statuses)
+            ticket["status"] = "won" if won else "lost"
+            ticket["resolved_at"] = datetime.now().isoformat()
+
+            if won:
+                gross = ticket["contracts"] * (1.0 - ticket["combined_entry_price"])
+                pnl = round(gross - ticket["entry_fees"], 4)
+            else:
+                pnl = round(-ticket["stake_dollars"] - ticket["entry_fees"], 4)
+            ticket["hypothetical_pnl"] = pnl
+            changed = True
+
+            balance, is_down, down_by = record_paper_bankroll_change(
+                "parlay", pnl, ticket["ticket_id"],
+                note=f"{len(ticket['legs'])}-leg parlay {ticket['status']}",
+            )
+            if send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[PARLAY {'HIT' if won else 'BUSTED'}] {len(ticket['legs'])}-leg ticket: ${pnl:+.2f}. "
+                    f"Parlay paper bankroll: ${balance:.2f}",
+                )
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] resolve_parlay_paper_trades error: {e}")
