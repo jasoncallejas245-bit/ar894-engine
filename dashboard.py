@@ -163,7 +163,7 @@ PAGE_TEMPLATE = """
           <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · entry ${{ "%.2f"|format(p.entry_price or 0) }} · {{ p.status }}</div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if p.hypothetical_pnl is not none %}${{ "%.2f"|format(p.hypothetical_pnl) }}{% else %}pending{% endif %}
+          {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
         </div>
       </div>
       {% endfor %}
@@ -285,16 +285,7 @@ def get_client():
 def dashboard():
     import paper_trading as pt
     import worker
-    import traceback
-    try:
-        return _dashboard_impl(pt, worker)
-    except Exception:
-        # TEMPORARY diagnostic -- pinpointing a live 500 error (2026-09-09).
-        # Will be removed the moment the real cause is found and fixed.
-        return "<pre>" + traceback.format_exc() + "</pre>", 500
 
-
-def _dashboard_impl(pt, worker):
     client = get_client()
 
     try:
