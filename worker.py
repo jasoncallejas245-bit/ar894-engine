@@ -488,6 +488,17 @@ def fetch_sharpapi_odds(league):
     return all_rows
 
 
+def _write_props_debug_sample(league, sample_row, note):
+    try:
+        from state_io import atomic_write_json, safe_read_json
+        path = os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_debug_sample.json")
+        data = safe_read_json(path, {})
+        data[league] = {"sample_row": sample_row, "note": note, "at": datetime.now().isoformat()}
+        atomic_write_json(path, data)
+    except Exception as e:
+        print(f"[props] debug sample write failed: {e}")
+
+
 def fetch_sharpapi_player_props(league):
     """
     Player-prop odds for one league from SharpAPI, mirroring
@@ -532,29 +543,16 @@ def fetch_sharpapi_player_props(league):
                 DISCORD_WEBHOOK_UPDATES,
                 f"[props] {league} player_props first sample row, for verifying the field names match what the code expects:\n{rows[0]}",
             )
-            # Also written to a small debug file (readable via the dashboard's
-            # /debug/props_sample route) so this can be checked directly
-            # without needing Discord access -- see dashboard.py.
-            try:
-                from state_io import atomic_write_json
-                atomic_write_json(
-                    os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_debug_sample.json"),
-                    {"league": league, "sample_row": rows[0], "at": datetime.now().isoformat()},
-                )
-            except Exception as e:
-                print(f"[props] debug sample write failed: {e}")
+            # Also written to a small per-league debug file (readable via
+            # the dashboard's /debug/props_sample route) so this can be
+            # checked directly without needing Discord access -- keyed by
+            # league so MLB/WNBA/NBA don't overwrite each other.
+            _write_props_debug_sample(league, rows[0], None)
         elif not rows and not logged_sample:
             # Confirms the request itself didn't error but came back empty --
             # different from a schema-mismatch (which would still return rows,
             # just ones _parse_player_prop_row can't read).
-            try:
-                from state_io import atomic_write_json
-                atomic_write_json(
-                    os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_debug_sample.json"),
-                    {"league": league, "sample_row": None, "note": "request succeeded but returned zero rows", "at": datetime.now().isoformat()},
-                )
-            except Exception:
-                pass
+            _write_props_debug_sample(league, None, "request succeeded but returned zero rows")
         all_rows.extend(rows)
         pagination = body.get("pagination", {})
         if not pagination.get("has_more"):

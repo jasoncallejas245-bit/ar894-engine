@@ -1361,8 +1361,8 @@ def debug_props_sample_route():
     see that function's docstring for why the exact schema wasn't
     confirmed before deploying.
     """
-    sample = load_json("props_debug_sample.json", None)
-    if sample is None:
+    sample = load_json("props_debug_sample.json", {})
+    if not sample:
         return {"status": "no data yet -- no player-prop fetch has completed since this route was added"}
     return sample
 
