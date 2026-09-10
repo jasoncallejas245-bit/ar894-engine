@@ -240,7 +240,7 @@ PAGE_TEMPLATE = """
 
   <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
     <h3 style="color:#8fa8ff;">🏈 Passing Yards -- Main Focus</h3>
-    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks, each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
+    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks -- PRACTICE BETS OF $15 EACH -- each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
     <div class="row">
       <span class="label">Picks made</span>
       <span class="big" style="font-size:1.3em;">{{ passing_yards_summary.total_picks or 0 }}</span>
@@ -262,7 +262,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
@@ -340,7 +340,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · entry ${{ "%.2f"|format(p.entry_price or 0) }} · {{ p.status }}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong> · {{ p.status }}</div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
@@ -402,7 +402,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
-          <div class="sub">{{ p.opponent }} · entry ${{ "%.2f"|format(p.entry_price) }}</div>
+          <div class="sub">{{ p.opponent }} · contract price ${{ "%.2f"|format(p.entry_price) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong></div>
           <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
         </div>
       </div>
