@@ -1446,14 +1446,16 @@ PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba"}
 
 def _parse_player_prop_row(row):
     """
-    Extraction from one SharpAPI player-prop row. Field names confirmed
-    2026-09-10 against SharpAPI's published OpenAPI spec (docs.sharpapi.io/openapi.json):
-    player_name, stat_category, line, selection ("Over"/"Under"),
-    probability, plus the same event_id/away_team/home_team/sportsbook
-    fields the main-line moneyline rows already use. A couple of older
-    guessed field names are kept as a fallback in case a given row uses
-    them instead, but the confirmed names are tried first. Returns None
-    rather than guessing if it can't confidently parse the row.
+    Extraction from one SharpAPI player-prop row. Field names CONFIRMED
+    2026-09-10 against a real live response (market="props" -- the
+    OpenAPI-spec-derived guesses "player_prop"/"selection"/"probability"
+    turned out wrong; a live probe against the real API found the actual
+    working value and a real sample row, see worker.probe_sharpapi_player_prop_market):
+    player_name, stat_category, line, selection_type ("over"/"under",
+    already lowercase), odds_probability -- plus event_id/away_team/
+    home_team/sportsbook, same as the main-line moneyline rows. Older
+    guessed names kept as a fallback only. Returns None rather than
+    guessing if it can't confidently parse the row.
     """
     try:
         player = row.get("player_name") or row.get("player") or row.get("athlete")
@@ -1461,10 +1463,10 @@ def _parse_player_prop_row(row):
         line = row.get("line")
         if line is None:
             line = row.get("point")
-        side = row.get("selection") or row.get("side") or row.get("outcome")
-        prob = row.get("probability")
+        side = row.get("selection_type") or row.get("selection") or row.get("side")
+        prob = row.get("odds_probability")
         if prob is None:
-            prob = row.get("implied_probability")
+            prob = row.get("probability")
         if not player or not stat or line is None or not side:
             return None
         side_norm = str(side).strip().lower()
