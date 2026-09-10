@@ -648,7 +648,11 @@ def track_moneyline_contract_prices(client):
 # untested experiment: paper-only, tunable/disable-able via env, and its
 # own real performance will show up in contract_price_history + the
 # dashboard once picks resolve this way.
-MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
+# Disabled by default (2026-09-10, user request) -- it was cashing out
+# at a flat 92% price regardless of entry price, so cheap-margin entries
+# (already at $0.85-0.93) captured only a few cents after fees instead of
+# riding to actual resolution. Still env-tunable if this is wanted back.
+MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "false").lower() == "true"
 MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.92"))
 
 
@@ -1339,8 +1343,14 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
             groups.setdefault(key, []).append(p)
 
         paper_data = load_paper_trades()
+        # Dedup on (player, event_id) only -- NOT line. A sportsbook's
+        # passing-yards line for the same QB in the same game commonly
+        # ticks by half a yard cycle to cycle; keying on the exact line
+        # was creating a brand-new "pick" every time it moved instead of
+        # recognizing this player/game already has one pending, which is
+        # why pick counts were climbing far faster than actual games.
         already_picked = {
-            (p["player"], p["line"], p.get("event_id"))
+            (p["player"], p.get("event_id"))
             for p in paper_data["passing_yards"] if p["status"] == "pending"
         }
 
@@ -1370,7 +1380,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
             event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
                 league, cand.get("away_team"), cand.get("home_team")
             )
-            dedup_key = (player, line, event_id)
+            dedup_key = (player, event_id)
             if dedup_key in already_picked:
                 continue
 
@@ -1830,8 +1840,13 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
             groups.setdefault(key, []).append(p)
 
         paper_data = load_paper_trades()
+        # Dedup on (player, stat_type, event_id) -- NOT line, same
+        # reasoning as passing_yards above (line drift shouldn't create a
+        # new pick), but stat_type IS kept here since one player can have
+        # multiple distinct combined-stat props (PR, PA, RA, PRA) live on
+        # the same game at once and those are genuinely different bets.
         already_picked = {
-            (p["player"], p["line"], p.get("event_id"))
+            (p["player"], p["stat_type"], p.get("event_id"))
             for p in paper_data["wnba_combined"] if p["status"] == "pending"
         }
 
@@ -1841,7 +1856,11 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
             if not probs:
                 continue
             avg_prob = sum(probs) / len(probs)
-            pl_key = (player, line)
+            # Keyed on (player, stat_type, line), not just (player, line) --
+            # two different combined-stat props for the same player (e.g.
+            # points+rebounds vs points+assists) can coincidentally share
+            # a line value, and used to silently overwrite each other here.
+            pl_key = (player, stat_type, line)
             existing = by_player_line.get(pl_key)
             if existing is None or avg_prob > existing["consensus_prob"]:
                 sample = rows[0]
@@ -1859,7 +1878,7 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
             event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
                 league, cand.get("away_team"), cand.get("home_team")
             )
-            dedup_key = (player, line, event_id)
+            dedup_key = (player, cand["stat_type"], event_id)
             if dedup_key in already_picked:
                 continue
 
