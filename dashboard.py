@@ -639,8 +639,8 @@ def dashboard():
     ml_early_exits = [p for p in all_moneyline_picks_early if p.get("exit_reason") == "early_profit_target"]
     ml_early_exit_note = (
         f"{len(ml_early_exits)} pick(s) cashed out early instead of waiting for the game to finish "
-        f"(threshold: {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied) -- "
-        f"${sum(p.get('hypothetical_pnl') or 0 for p in ml_early_exits):+.2f} from those so far. "
+        f"(threshold: {pt.MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO*100:.0f}% of the max possible profit "
+        f"already locked in) -- ${sum(p.get('hypothetical_pnl') or 0 for p in ml_early_exits):+.2f} from those so far. "
         f"This threshold isn't backed by tracked price data yet -- it's a new experiment."
         if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else
         "Disabled (MONEYLINE_PAPER_EARLY_EXIT_ENABLED=false) -- holding every pick until the game finishes"
@@ -661,7 +661,7 @@ def dashboard():
                 },
                 {
                     "label": "Early profit-taking",
-                    "value": f"On, at {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied" if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else "Off",
+                    "value": f"On, once {pt.MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO*100:.0f}% of max profit is locked in" if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else "Off",
                     "explanation": ml_early_exit_note,
                 },
                 {

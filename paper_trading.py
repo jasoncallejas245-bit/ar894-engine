@@ -648,22 +648,33 @@ def track_moneyline_contract_prices(client):
 # untested experiment: paper-only, tunable/disable-able via env, and its
 # own real performance will show up in contract_price_history + the
 # dashboard once picks resolve this way.
-# Re-enabled (2026-09-10, user request) with a higher bar: only cash out
-# early once the price is genuinely close to the full $1.00 payout, not
-# the old flat 92% -- that let it cash out with 8+ cents of upside still
-# on the table regardless of how cheap the entry was. 97% means it's
-# already captured essentially all of the possible profit before it exits.
+# Re-enabled (2026-09-10, user request), redesigned around CAPTURED
+# PROFIT rather than a flat contract price. A flat price threshold (the
+# original 92%, then a tried-and-rejected 97%) doesn't mean the same
+# thing for every pick: a $15 bet at $0.50/contract (30 contracts) has
+# $15 of profit on the table if it resolves, while the same $15 bet at
+# $0.85/contract only has ~$2.65 on the table -- a flat price cutoff
+# either exits the first one too early or the second one too late.
+#
+# Per the user's own example: bet $15, it could pay out $30 total ($15
+# profit) if held to resolution -- don't cash out at $17 (only $2 of that
+# $15 captured, 13%), but DO cash out at $25 ($10 captured, 67%) rather
+# than risk the whole position for the last $5. So this now exits once
+# MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO of the MAX POSSIBLE profit
+# (from entry price to $1.00) is already locked in -- 0.67 by default,
+# which is exactly the $25-of-$30 example above.
 MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
-MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.97"))
+MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO", "0.67"))
 
 
 def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
     """
     Runs on the fast cycle right after track_moneyline_contract_prices. If
-    a pending pick's latest tracked bid has reached
-    MONEYLINE_PAPER_EARLY_EXIT_PROB, closes it out AT THAT PRICE instead of
-    waiting for the game to finish (both entry and exit taker fees
-    charged). Paper-only; never touches a real position. Never raises.
+    a pending pick has already captured MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO
+    of its maximum possible profit (entry price to $1.00), closes it out
+    AT THE LATEST TRACKED PRICE instead of waiting for the game to finish
+    (both entry and exit taker fees charged). Paper-only; never touches a
+    real position. Never raises.
     """
     if not MONEYLINE_PAPER_EARLY_EXIT_ENABLED:
         return
@@ -677,10 +688,15 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
             if not history or not pick.get("entry_price"):
                 continue
             latest = history[-1]["price"]
-            if latest < MONEYLINE_PAPER_EARLY_EXIT_PROB:
+            entry_price = pick["entry_price"]
+            if entry_price >= 1.0:
+                continue
+            max_possible_profit_per_contract = 1.0 - entry_price
+            captured_profit_per_contract = latest - entry_price
+            captured_ratio = captured_profit_per_contract / max_possible_profit_per_contract
+            if captured_ratio < MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO:
                 continue
 
-            entry_price = pick["entry_price"]
             contracts = max(1.0, PAPER_STAKE_DOLLARS / entry_price)
             entry_fee = _kalshi_taker_fee_dollars_local(entry_price, contracts)
             exit_fee = _kalshi_taker_fee_dollars_local(latest, contracts)
