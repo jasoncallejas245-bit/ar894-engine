@@ -1367,6 +1367,20 @@ def debug_props_sample_route():
     return sample
 
 
+@app.route("/debug/props_probe")
+def debug_props_probe_route():
+    """
+    Read-only: shows the one-time player-prop market-parameter probe
+    (see worker.probe_sharpapi_player_prop_market) -- raw status/body for
+    each candidate market value tried against the real SharpAPI key, so
+    the correct value can be confirmed from real data.
+    """
+    probe = load_json("props_market_probe.json", None)
+    if probe is None:
+        return {"status": "no probe result yet -- runs once at the start of the next sports scan cycle"}
+    return probe
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

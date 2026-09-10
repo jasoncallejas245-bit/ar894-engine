@@ -499,6 +499,54 @@ def _write_props_debug_sample(league, sample_row, note):
         print(f"[props] debug sample write failed: {e}")
 
 
+PROP_MARKET_PROBE_CANDIDATES = ["player_prop", "props", "player_points", "player_props"]
+
+
+def probe_sharpapi_player_prop_market(league="mlb"):
+    """
+    ONE-TIME diagnostic (2026-09-10): web-fetched SharpAPI docs gave
+    CONTRADICTORY answers for the player-prop market parameter and field
+    names across two separate lookups (one said "player_prop" +
+    "selection", another said "props"/"player_points" + "selection_type")
+    -- that contradiction means the doc summaries can't be trusted blind.
+    This tries each realistic candidate against the REAL API with a
+    small limit, and writes the raw HTTP status + response body for each
+    to a debug file (readable at /debug/props_probe) so the actual
+    working value can be confirmed from real data instead of guessed at
+    again. Runs once (guarded by the debug file already existing) so it
+    doesn't burn extra rate-limited requests every cycle.
+    """
+    from state_io import atomic_write_json, safe_read_json
+    probe_path = os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_market_probe.json")
+    if safe_read_json(probe_path, None) is not None:
+        return  # already probed
+    results = {}
+    for market_value in PROP_MARKET_PROBE_CANDIDATES:
+        try:
+            resp = requests.get(
+                SHARPAPI_BASE,
+                params={"league": league, "market": market_value, "limit": 5},
+                headers={"X-API-Key": SHARPAPI_KEY},
+                timeout=15,
+            )
+            body_text = resp.text[:1500]
+            try:
+                body_json = resp.json()
+                row_count = len(body_json.get("data", []))
+                sample = body_json.get("data", [])[0] if row_count else None
+            except Exception:
+                row_count = None
+                sample = None
+            results[market_value] = {
+                "status_code": resp.status_code, "row_count": row_count,
+                "sample_row": sample, "raw_body_truncated": body_text,
+            }
+        except Exception as e:
+            results[market_value] = {"error": str(e)}
+        time.sleep(1.5)  # stay well under the 12/min rate limit across 4 probes
+    atomic_write_json(probe_path, {"league": league, "at": datetime.now().isoformat(), "results": results})
+
+
 def fetch_sharpapi_player_props(league):
     """
     Player-prop odds for one league from SharpAPI, mirroring
@@ -1213,6 +1261,11 @@ def run_once(client, seen_trades, run_sports_scan=True):
         paper_min_edge_pct = 1.5
     # Collected across every league this cycle, then handed to the parlay
     # builder once the loop finishes -- see paper_trading.maybe_make_parlay_pick.
+    try:
+        probe_sharpapi_player_prop_market("mlb")
+    except Exception as e:
+        print(f"[props] market probe error: {e}")
+
     cycle_new_picks = []
 
     for league in LEAGUE_SERIES.keys():
