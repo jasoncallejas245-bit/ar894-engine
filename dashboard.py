@@ -313,7 +313,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -412,8 +412,8 @@ PAGE_TEMPLATE = """
       {% for t in all_parlay_tickets[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span></div>
-          <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}){% if not loop.last %}, {% endif %}{% endfor %}</div>
+          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span></div>
+          <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
           <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
         </div>
         <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -433,8 +433,8 @@ PAGE_TEMPLATE = """
       {% for t in all_prop_tickets[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span></div>
-          <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span></div>
+          <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
           <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
         </div>
         <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -689,6 +689,19 @@ def dashboard():
 
     all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
+
+    # Combined "whole slip" hit probability -- parlay already tracks
+    # combined_entry_price (product of each leg's Kalshi contract price,
+    # which IS the market's implied combined probability); props tickets
+    # don't store one, so compute it here as the product of each leg's own
+    # sportsbook-consensus probability.
+    for _t in all_parlay_tickets:
+        _t["combined_prob"] = _t.get("combined_entry_price")
+    for _t in all_prop_tickets:
+        _cp = 1.0
+        for _l in _t.get("legs", []):
+            _cp *= (_l.get("consensus_prob") or 0.5)
+        _t["combined_prob"] = _cp
 
     # Passing yards -- MAIN FOCUS, at the user's request: its own
     # prominent card near the top of the dashboard (see the template),
