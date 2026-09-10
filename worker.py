@@ -97,13 +97,15 @@ FAVORITE_MIN_PROB = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
 
 def get_favorite_min_prob():
     return pt.get_effective_favorite_min_prob()
-SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
-# Sports (SharpAPI) scanning stays on its own slower cadence -- games move
-# on a much longer clock, and SharpAPI calls are the heavier/more
-# rate-limit-sensitive part. Position closes/reconciliation and
-# paper-trade resolution still run every SCAN_INTERVAL_SECONDS regardless
-# of this.
-SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "300"))
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
+# Sports (SharpAPI) scanning cadence. Confirmed against the live SharpAPI
+# account (2026-09-10): trial plan allows 60 requests/minute, and a full
+# sports scan across all 6 active leagues (5 of them also pulling props)
+# uses ~11 calls. At a 60s cadence that's ~11 calls/min -- well under the
+# cap -- so this can safely run once a minute instead of once every 5.
+# Position closes/reconciliation and paper-trade resolution still run
+# every SCAN_INTERVAL_SECONDS regardless of this.
+SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "60"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
