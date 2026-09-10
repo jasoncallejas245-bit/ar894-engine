@@ -473,6 +473,17 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         else:
             bet_tier = "thin"
 
+        # pick_score: a 0-100 "bang for your buck" gauge for the confidence
+        # bar on the dashboard -- continuous, not just the 3-way tier, so
+        # picks within a tier can still be told apart at a glance. Half
+        # from edge size (8%+ edge treated as excellent), half from how far
+        # above a coinflip the market's own probability is (30pts of prob
+        # range = full marks). Clamped 0-100.
+        _prob = best_pick["market_probability"] or 0.5
+        _edge_component = max(0.0, min(1.0, edge / 8.0)) * 100
+        _prob_component = max(0.0, min(1.0, (_prob - 0.50) / 0.30)) * 100
+        pick_score = round((_edge_component + _prob_component) / 2)
+
         pick = {
             "pick_id": uuid.uuid4().hex[:12],
             "league": league.upper(),
@@ -494,6 +505,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "event_start_time": start_str,
             "manual_bet_candidate": manual_bet_candidate,
             "bet_tier": bet_tier,
+            "pick_score": pick_score,
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -1377,6 +1389,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                 "picked_at": datetime.now().isoformat(),
                 "status": "pending",
                 "bet_tier": "strong" if cand["consensus_prob"] >= 0.60 else "thin",
+                "pick_score": round(max(0.0, min(1.0, (cand["consensus_prob"] - 0.50) / 0.20)) * 100),
             }
             paper_data["passing_yards"].append(pick)
             new_picks.append(pick)

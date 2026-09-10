@@ -122,7 +122,10 @@ PAGE_TEMPLATE = """
   .sub { color:#8b949e; font-size:0.8em; margin-top:2px; line-height:1.4; }
   .badge { font-size:0.71em; padding:3px 9px; border-radius:20px; background:#1c2333; color:#9aa6c7; border:1px solid #2a3348; font-weight:600; }
   .badge-bet { background:#0d2818; color:#3fb950; border:1px solid #238636; }
+  .badge-thin { background:#2a2410; color:#d4a72c; border:1px solid #5a4a15; }
   .badge-data { background:#1c2230; color:#6e7a94; border:1px solid #2a3348; }
+  .score-bar { background:#1c2230; border-radius:8px; height:5px; overflow:hidden; margin-top:6px; }
+  .score-bar-fill { height:100%; border-radius:8px; transition:width 0.3s ease; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width:480px) { .grid2 { grid-template-columns:1fr; } }
   .bar { background:#1c2230; border-radius:8px; height:7px; overflow:hidden; margin-top:9px; }
@@ -238,9 +241,57 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
+  <div class="card">
+    <h3>Your Manual Bets</h3>
+    <div class="sub" style="margin-bottom:10px;">Real bets you placed yourself with your own money on Kalshi. Log one against a pick below and this tracks how your own betting actually does -- including whether following a \U0001F525 strong pick beats picking your own from the \U0001F44D thin-edge pool.</div>
+
+    <form method="POST" action="/log_manual_bet" style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px; padding:12px; background:#161b26; border-radius:8px; border:1px solid #2a3348;">
+      <select name="pick_id" required style="background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
+        <option value="" disabled selected>Which pick did you bet?</option>
+        {% for lp in loggable_picks %}
+        <option value="{{ lp.pick_id }}">{{ '\U0001F525' if lp.bet_tier == 'strong' else ('\U0001F44D' if lp.bet_tier == 'thin' else '⚠') }} {{ lp.label }}</option>
+        {% endfor %}
+      </select>
+      <div style="display:flex; gap:8px;">
+        <input type="number" name="stake_dollars" placeholder="Your $ stake" min="1" step="0.01" required style="flex:1; background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
+        <button type="submit" style="background:#238636; color:#fff; border:none; border-radius:6px; padding:8px 16px; font-weight:600; cursor:pointer;">Log bet</button>
+      </div>
+      <input type="text" name="note" placeholder="Optional note" style="background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
+    </form>
+
+    <div class="row" style="margin-bottom:6px;">
+      <span class="label">Overall</span>
+      <span>{{ manual_bet_summary.overall.resolved }}/{{ manual_bet_summary.overall.logged }} resolved{% if manual_bet_summary.overall.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.overall.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.overall.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.overall.pnl) }}</span></span>
+    </div>
+    <div class="row" style="margin-bottom:6px;">
+      <span class="label">\U0001F525 Followed a strong pick</span>
+      <span>{{ manual_bet_summary.followed_recommendation.resolved }}/{{ manual_bet_summary.followed_recommendation.logged }} resolved{% if manual_bet_summary.followed_recommendation.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.followed_recommendation.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.followed_recommendation.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.followed_recommendation.pnl) }}</span></span>
+    </div>
+    <div class="row" style="margin-bottom:10px;">
+      <span class="label">Picked on your own</span>
+      <span>{{ manual_bet_summary.own_choice.resolved }}/{{ manual_bet_summary.own_choice.logged }} resolved{% if manual_bet_summary.own_choice.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.own_choice.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.own_choice.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.own_choice.pnl) }}</span></span>
+    </div>
+
+    {% if manual_bets_list %}
+    {% for m in manual_bets_list %}
+    <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+      <div>
+        <div><strong>{{ m.label }}</strong> <span class="badge">${{ "%.2f"|format(m.stake_dollars) }}</span></div>
+        <div class="sub">{{ m.logged_at }}{% if m.note %} · {{ m.note }}{% endif %}</div>
+      </div>
+      <div class="{{ 'green' if m.status == 'won' else ('red' if m.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+        {% if m.result_pnl is not none %}${{ "%.2f"|format(m.result_pnl) }}{% else %}{{ m.status }}{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="muted">No manual bets logged yet -- use the form above after you place one.</div>
+    {% endif %}
+  </div>
+
   <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
     <h3 style="color:#8fa8ff;">🏈 Passing Yards -- Main Focus</h3>
-    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks, each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
+    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks -- PRACTICE BETS OF $15 EACH -- each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
     <div class="row">
       <span class="label">Picks made</span>
       <span class="big" style="font-size:1.3em;">{{ passing_yards_summary.total_picks or 0 }}</span>
@@ -261,8 +312,9 @@ PAGE_TEMPLATE = """
       {% for p in all_passing_yards_picks[:8] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
@@ -334,13 +386,14 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>All Recent Picks</h3>
-    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made. <span class="green">🎯 Bet this yourself</span> means it also cleared the tighter bar real trading uses -- the bot would have placed this one for real if real trading were on for this league. No badge = data collection only, don't place it.</div>
+    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made. <span class="green">🔥 Strong</span> clears the tighter bar real trading uses. <span style="color:#d4a72c;">👍 Thin edge</span> has real detected edge, just under that bar -- still worth a look, smaller size if you take it. <span class="muted">⚠ Skip</span> is a near-zero-edge pick kept only to build up data volume -- not worth your own money. The bar under each pick is the same signal as a % gauge, red to green.</div>
     {% if all_recent_picks %}
       {% for p in all_recent_picks[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · entry ${{ "%.2f"|format(p.entry_price or 0) }} · {{ p.status }}</div>
+          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong> · {{ p.status }}</div>
+          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
@@ -396,13 +449,14 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Pending Picks — Live Countdown</h3>
-    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves. <span class="green">🎯 Bet this yourself</span> = still time to place it and it clears the real-trading bar; no badge = data only.</div>
+    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves. <span class="green">🔥 Strong</span> = clears the real-trading bar. <span style="color:#d4a72c;">👍 Thin edge</span> = real edge, smaller/optional. <span class="muted">⚠ Skip</span> = no real edge, data only.</div>
     {% if pending_picks %}
       {% for p in pending_picks %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
-          <div class="sub">{{ p.opponent }} · entry ${{ "%.2f"|format(p.entry_price) }}</div>
+          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
+          <div class="sub">{{ p.opponent }} · contract price ${{ "%.2f"|format(p.entry_price) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong></div>
+          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
           <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
         </div>
       </div>
@@ -820,8 +874,15 @@ def dashboard():
 
     parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
 
+    manual_bet_summary = pt.get_manual_bet_summary()
+    manual_bets_list = pt.get_manual_bets_with_status()[:20]
+    loggable_picks = pt.get_loggable_picks()
+
     return render_template_string(
         PAGE_TEMPLATE,
+        manual_bet_summary=manual_bet_summary,
+        manual_bets_list=manual_bets_list,
+        loggable_picks=loggable_picks,
         balance=balance,
         positions=positions,
         trade_log=trade_log,
@@ -857,6 +918,24 @@ def dashboard():
         net_pnl=net_pnl,
         parlay_leg_breakdown=parlay_leg_breakdown,
     )
+
+
+@app.route("/log_manual_bet", methods=["POST"])
+def log_manual_bet():
+    """Logs a real bet the user placed themselves against one of the bot's
+    picks, so manual-betting performance can be tracked over time -- never
+    places anything, purely a record."""
+    import paper_trading as pt
+    pick_id = (request.form.get("pick_id") or "").strip()
+    stake_raw = request.form.get("stake_dollars") or "0"
+    note = (request.form.get("note") or "").strip() or None
+    try:
+        stake_dollars = float(stake_raw)
+    except ValueError:
+        stake_dollars = 0.0
+    if pick_id and stake_dollars > 0:
+        pt.record_manual_bet(pick_id, stake_dollars, side_note=note)
+    return redirect("/")
 
 
 @app.route("/allocate", methods=["POST"])
