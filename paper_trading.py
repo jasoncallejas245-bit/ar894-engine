@@ -1,6 +1,7 @@
 import os
 import statistics
 import requests
+import uuid
 from datetime import datetime, timezone
 
 from state_io import atomic_write_json, safe_read_json
@@ -60,6 +61,7 @@ def load_paper_trades():
     data.setdefault("parlay", [])
     data.setdefault("props", [])
     data.setdefault("passing_yards", [])
+    data.setdefault("manual_bets", [])
     return data
 
 
@@ -456,7 +458,23 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
                 and best_pick["market_probability"] >= real_favorite_min_prob
             )
 
+        # bet_tier ranks "bang for your buck" instead of a hard yes/no gate.
+        # "skip" is reserved for picks with essentially zero or negative
+        # detected edge (the wide, data-collection-only net lets these
+        # through on purpose to build sample size) -- those are the only
+        # ones actually worth steering away from. Everything with real
+        # positive edge stays visible and ranked, even below the strict
+        # real-trading bar, so nothing useful gets hidden.
+        edge = best_pick["edge_pct"] or 0.0
+        if edge <= 0:
+            bet_tier = "skip"
+        elif manual_bet_candidate:
+            bet_tier = "strong"
+        else:
+            bet_tier = "thin"
+
         pick = {
+            "pick_id": uuid.uuid4().hex[:12],
             "league": league.upper(),
             "event_id": event_id,
             "away_team": away_team,
@@ -475,6 +493,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "contract_price_history": [],
             "event_start_time": start_str,
             "manual_bet_candidate": manual_bet_candidate,
+            "bet_tier": bet_tier,
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -1343,6 +1362,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                 continue
 
             pick = {
+                "pick_id": uuid.uuid4().hex[:12],
                 "player": player,
                 "league": league.upper(),
                 "stat_type": "passing_yards",
@@ -1356,6 +1376,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                 "entry_price": cand["consensus_prob"],
                 "picked_at": datetime.now().isoformat(),
                 "status": "pending",
+                "bet_tier": "strong" if cand["consensus_prob"] >= 0.60 else "thin",
             }
             paper_data["passing_yards"].append(pick)
             new_picks.append(pick)
@@ -1535,3 +1556,168 @@ def check_profitability_milestones(send_discord_fn=None, webhook=None, real_trad
             atomic_write_json(PROFITABILITY_ALERTS_FILE, state)
     except Exception as e:
         print(f"[paper_trading] check_profitability_milestones error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Manual bet tracking -- lets the user log a real bet THEY placed themselves
+# (on Kalshi, with their own money) against a specific pick the bot already
+# made, so we can build real data on how their own manual betting performs,
+# and specifically whether following the bot's higher-tier ("strong")
+# recommendations actually does better than picks they chose on their own
+# from the "thin edge" tier or otherwise. This never places anything or
+# touches real trading -- it's a log the user fills in after the fact.
+# ---------------------------------------------------------------------------
+def _find_pick_by_id(paper_data, pick_id):
+    """Looks up a moneyline or passing_yards pick by its pick_id. Returns
+    (category, pick_dict) or (None, None) if not found (e.g. an older pick
+    made before pick_id existed)."""
+    for p in paper_data.get("moneyline", []):
+        if p.get("pick_id") == pick_id:
+            return "moneyline", p
+    for p in paper_data.get("passing_yards", []):
+        if p.get("pick_id") == pick_id:
+            return "passing_yards", p
+    return None, None
+
+
+def record_manual_bet(pick_id, stake_dollars, side_note=None):
+    """
+    Logs that the user placed a real bet of stake_dollars on the pick
+    identified by pick_id (a moneyline or passing_yards pick_id). Snapshots
+    the pick's bet_tier and label at the time of logging so later changes
+    to thresholds don't retroactively change what was recommended when the
+    bet was made. Never raises -- returns the logged entry, or None if the
+    pick_id wasn't found.
+    """
+    try:
+        paper_data = load_paper_trades()
+        category, pick = _find_pick_by_id(paper_data, pick_id)
+        if pick is None:
+            return None
+
+        if category == "moneyline":
+            label = f"{pick['picked_team']} {pick['league']}"
+        else:
+            label = f"{pick['player']} {pick['side'].upper()} {pick['line']} yds ({pick['league']})"
+
+        entry = {
+            "manual_bet_id": uuid.uuid4().hex[:12],
+            "pick_id": pick_id,
+            "category": category,
+            "label": label,
+            "bet_tier_at_bet_time": pick.get("bet_tier"),
+            "followed_recommendation": pick.get("bet_tier") == "strong",
+            "stake_dollars": round(float(stake_dollars), 2),
+            "logged_at": datetime.now().isoformat(),
+            "note": side_note,
+        }
+        paper_data.setdefault("manual_bets", []).append(entry)
+        save_paper_trades(paper_data)
+        return entry
+    except Exception as e:
+        print(f"[paper_trading] record_manual_bet error: {e}")
+        return None
+
+
+def get_manual_bets_with_status():
+    """
+    Returns every logged manual bet joined with its underlying pick's
+    current status/result, newest first, so the dashboard can show real
+    outcomes as they resolve. Each entry gets a "result_pnl" -- the user's
+    own stake scaled by the same $/contract return the paper pick tracked
+    -- and "status" (won/lost/pending/unknown if the source pick vanished).
+    """
+    try:
+        paper_data = load_paper_trades()
+        out = []
+        for entry in paper_data.get("manual_bets", []):
+            category, pick = _find_pick_by_id(paper_data, entry.get("pick_id"))
+            row = dict(entry)
+            if pick is None:
+                row["status"] = "unknown"
+                row["result_pnl"] = None
+            else:
+                row["status"] = pick.get("status", "pending")
+                pick_pnl = pick.get("hypothetical_pnl")
+                pick_stake = pick.get("stake_dollars") or PAPER_STAKE_DOLLARS
+                if pick_pnl is not None and pick_stake:
+                    # scale the pick's own $ result to the user's actual stake
+                    row["result_pnl"] = round(pick_pnl * (entry["stake_dollars"] / pick_stake), 2)
+                else:
+                    row["result_pnl"] = None
+            out.append(row)
+        out.sort(key=lambda r: r.get("logged_at") or "", reverse=True)
+        return out
+    except Exception as e:
+        print(f"[paper_trading] get_manual_bets_with_status error: {e}")
+        return []
+
+
+def get_manual_bet_summary():
+    """
+    Aggregate stats across every logged manual bet: total logged, resolved
+    count/win rate/$ pnl overall, and the same split out for bets that
+    followed a "strong" (bot-recommended) pick vs everything else -- so it's
+    possible to actually see whether following the bot's top tier beats
+    picks the user chose on their own from the wider pool. Never raises.
+    """
+    try:
+        rows = get_manual_bets_with_status()
+
+        def _summarize(subset):
+            resolved = [r for r in subset if r["status"] in ("won", "lost")]
+            wins = [r for r in resolved if r["status"] == "won"]
+            pnl = sum(r["result_pnl"] or 0.0 for r in resolved)
+            return {
+                "logged": len(subset),
+                "resolved": len(resolved),
+                "win_rate": round(100 * len(wins) / len(resolved), 1) if resolved else None,
+                "pnl": round(pnl, 2),
+            }
+
+        followed = [r for r in rows if r.get("followed_recommendation")]
+        own_pick = [r for r in rows if not r.get("followed_recommendation")]
+        return {
+            "overall": _summarize(rows),
+            "followed_recommendation": _summarize(followed),
+            "own_choice": _summarize(own_pick),
+        }
+    except Exception as e:
+        print(f"[paper_trading] get_manual_bet_summary error: {e}")
+        return {"overall": {"logged": 0, "resolved": 0, "win_rate": None, "pnl": 0.0},
+                "followed_recommendation": {"logged": 0, "resolved": 0, "win_rate": None, "pnl": 0.0},
+                "own_choice": {"logged": 0, "resolved": 0, "win_rate": None, "pnl": 0.0}}
+
+
+def get_loggable_picks(limit=40):
+    """
+    Recent + pending moneyline and passing_yards picks, newest first, for
+    the dashboard's "log a bet you placed" dropdown -- includes each pick's
+    bet_tier so the user can see the label right in the picker.
+    """
+    try:
+        paper_data = load_paper_trades()
+        rows = []
+        for p in paper_data.get("moneyline", []):
+            if not p.get("pick_id"):
+                continue
+            rows.append({
+                "pick_id": p["pick_id"],
+                "label": f"{p['picked_team']} ({p['league']}) vs edge {p.get('edge_pct') or 0:.1f}%",
+                "bet_tier": p.get("bet_tier"),
+                "picked_at": p.get("picked_at"),
+            })
+        for p in paper_data.get("passing_yards", []):
+            if not p.get("pick_id"):
+                continue
+            rows.append({
+                "pick_id": p["pick_id"],
+                "label": f"{p['player']} {p['side'].upper()} {p['line']} yds ({p['league']})",
+                "bet_tier": p.get("bet_tier"),
+                "picked_at": p.get("picked_at"),
+            })
+        rows.sort(key=lambda r: r.get("picked_at") or "", reverse=True)
+        return rows[:limit]
+    except Exception as e:
+        print(f"[paper_trading] get_loggable_picks error: {e}")
+        return []
