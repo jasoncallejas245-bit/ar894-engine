@@ -285,6 +285,16 @@ def _longest_names_row(rows):
     return max(rows, key=lambda r: len(r.get("away_team") or "") + len(r.get("home_team") or ""))
 
 
+# UFC/ATP aren't daily leagues -- a fight card or tournament match is
+# scheduled days ahead, not same-day, so the usual same-day-only pick
+# window (below) would throw out every upcoming event until its exact
+# day arrives. These get a longer lookahead instead. 8 days covers a
+# normal fight-week/tournament-week gap without reaching so far ahead
+# that lines are still soft/thin.
+MULTI_DAY_LOOKAHEAD_LEAGUES = {"ufc", "atp"}
+MULTI_DAY_LOOKAHEAD_HOURS = float(os.getenv("MULTI_DAY_LOOKAHEAD_HOURS", "192"))  # 8 days
+
+
 def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None, real_min_edge_pct=None, real_favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
@@ -376,9 +386,19 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         team_by_side = {"away": away_team, "home": home_team}
         fair_by_side = {"away": fair_a if sel_a == "away" else fair_b, "home": fair_b if sel_a == "away" else fair_a}
 
-        # Same-day only -- mirrors real trading: the event must start later today
-        # (UTC), not just within some rolling hour window that could roll into
-        # tomorrow. Otherwise picks pile up for games that can't resolve soon.
+        # Same-day only for daily leagues (MLB/NBA/NFL/NCAAF/WNBA) -- mirrors
+        # real trading: the event must start later today (UTC), not some
+        # rolling window that could roll into tomorrow, so picks don't pile
+        # up for games that can't resolve soon.
+        #
+        # UFC/ATP are NOT daily -- a UFC card or an ATP tournament match is
+        # scheduled days ahead and shows up in SharpAPI/Kalshi well before
+        # fight/match day. Confirmed live (2026-09-10): every one of 29
+        # upcoming UFC fights was being thrown out here every single cycle
+        # because none of them started "today" yet -- the bot would only
+        # ever get a shot at picking a card on its exact fight day, and if
+        # that day's scan missed for any reason, the whole card was gone.
+        # So these leagues get a longer lookahead instead of same-day-only.
         start_str = best_row.get("event_start_time")
         if not start_str:
             continue
@@ -388,7 +408,11 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             continue
         now = datetime.now(timezone.utc)
         hours_until = (start_dt - now).total_seconds() / 3600
-        if not (hours_until >= 0 and start_dt.date() == now.date()):
+        if league in MULTI_DAY_LOOKAHEAD_LEAGUES:
+            in_window = 0 <= hours_until <= MULTI_DAY_LOOKAHEAD_HOURS
+        else:
+            in_window = hours_until >= 0 and start_dt.date() == now.date()
+        if not in_window:
             funnel["not_today_or_started"] += 1
             continue
 
