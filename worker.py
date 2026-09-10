@@ -1281,7 +1281,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
             kalshi_markets = get_open_markets(client, LEAGUE_SERIES[league])
             kalshi_events = group_kalshi_markets_by_event(kalshi_markets)
             new_picks = pt.make_moneyline_paper_picks(
-                league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_UPDATES,
+                league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_BETS,
                 min_edge_pct=paper_min_edge_pct, favorite_min_prob=paper_favorite_min_prob,
             )
             if new_picks:
@@ -1293,12 +1293,12 @@ def run_once(client, seen_trades, run_sports_scan=True):
             # section docstring for why NFL/NCAAF aren't included yet).
             if league in pt.PROP_GRADABLE_LEAGUES:
                 prop_rows = fetch_sharpapi_player_props(league)
-                pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_UPDATES)
+                pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
     try:
-        pt.maybe_make_parlay_pick(cycle_new_picks, send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.maybe_make_parlay_pick(cycle_new_picks, send_discord, DISCORD_WEBHOOK_BETS)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"parlay builder error: {e}")
 
@@ -1318,19 +1318,19 @@ def run_btc_and_resolution(client):
         pt.make_btc_paper_pick(client, MarketStatus, send_discord, None)  # BTC Discord notifications turned off 2026-09-10 at the user's request -- paper tracking itself is unaffected
         pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
         pt.check_and_close_btc_paper_early(send_discord, None)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
-        live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
-        live_trading.check_tie_alerts(send_discord, DISCORD_WEBHOOK_BETS)  # TIE ALERT HOOK -- delete this line to remove the feature
+        live_trading.monitor_live_games(client, send_discord, None)  # LIVE TRADING HOOK -- delete this line to remove the feature; Discord notice turned off 2026-09-10 at user's request (keeping only bet-slip + tie notifications)
+        live_trading.check_tie_alerts(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # TIE ALERT HOOK -- delete this line to remove the feature
         pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- mirrors BTC's, feeds the early-exit check below
-        pt.check_and_close_moneyline_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's
+        pt.check_and_close_moneyline_paper_early(send_discord, None)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's; Discord notice off 2026-09-10
         pt.resolve_btc_paper_trades(client, send_discord, None)
-        pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
-        pt.resolve_parlay_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
-        pt.resolve_prop_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
+        pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
+        pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
 
     try:
-        ledger.check_for_new_deposit(client, send_discord, DISCORD_WEBHOOK_UPDATES, "https://ar894-engine-production.up.railway.app")
+        ledger.check_for_new_deposit(client, send_discord, None, "https://ar894-engine-production.up.railway.app")  # Discord notice off 2026-09-10 at user's request
     except Exception as e:
         print(f"[ledger] deposit check error: {e}")
 
@@ -1340,7 +1340,7 @@ def run_btc_and_resolution(client):
         print(f"[adjust] error: {e}")
 
     try:
-        pt.maybe_adjust_moneyline_favorite_threshold(send_discord, DISCORD_WEBHOOK_UPDATES)
+        pt.maybe_adjust_moneyline_favorite_threshold(send_discord, None)  # Discord notice off 2026-09-10 at user's request
     except Exception as e:
         print(f"[adjust] moneyline threshold error: {e}")
 

@@ -289,7 +289,7 @@ def monitor_live_games(client, send_discord_fn, webhook):
         print(f"[live_trading] monitor_live_games error: {e}")
 
 
-def check_tie_alerts(send_discord_fn, webhook):
+def check_tie_alerts(client, send_discord_fn, webhook):
     """
     Called on the fast (BTC-speed) cycle -- for every tracked in-progress
     game in a league where a "tied score" makes sense (NFL/NCAAF/MLB/
@@ -299,12 +299,28 @@ def check_tie_alerts(send_discord_fn, webhook):
     this bot doesn't place real in-game bets itself (see monitor_live_games
     above for the separate, paper-only sustained-move strategy).
 
+    FIXED 2026-09-10: 0-0 at kickoff was triggering a false "just tied
+    up" alert every single game, since 0 == 0 satisfies a naive tie
+    check. Now requires at least one point/run on the board first.
+
+    ADDED 2026-09-10, at the user's explicit request: a tie score alone
+    doesn't say whether the team that just caught up is actually likely
+    to keep winning, or whether the other team is simply the better team
+    and likely to pull back ahead. Kalshi's OWN live price for each side
+    at the moment of the tie already bakes that in -- team quality,
+    which team has the ball/is home, time remaining, everything the
+    market knows -- so this now fetches both sides' current Kalshi price
+    and reports which side the market still favors despite the tie,
+    not just the score.
+
     Fetches each league's scoreboard at most ONCE per call (not once per
     game) and reuses it for every tracked game in that league. Re-arms
     per game: if the score un-ties and later ties again (common in
     baseball), a fresh alert goes out rather than staying silent forever
-    after the first tie. Never raises -- a bad ESPN match or a flaky
-    fetch just means no alert that cycle, never a crash.
+    after the first tie. Never raises -- a bad ESPN match, a flaky
+    fetch, or a missing Kalshi price just means no alert (or a
+    score-only alert without the favorite context) that cycle, never a
+    crash.
     """
     if not TIE_ALERTS_ENABLED:
         return
@@ -332,13 +348,34 @@ def check_tie_alerts(send_discord_fn, webhook):
                 continue
 
             is_tied = away_score == home_score
+            is_scoreless = away_score == 0 and home_score == 0
             was_tied = game.get("was_tied", False)
 
-            if is_tied and not was_tied:
+            if is_tied and not is_scoreless and not was_tied:
+                favorite_note = ""
+                try:
+                    away_market = client.get_market(game["away_ticker"])
+                    home_market = client.get_market(game["home_ticker"])
+                    away_price = getattr(away_market, "yes_ask_dollars", None)
+                    home_price = getattr(home_market, "yes_ask_dollars", None)
+                    away_price = float(away_price) if away_price else None
+                    home_price = float(home_price) if home_price else None
+                    if away_price is not None and home_price is not None:
+                        if away_price >= home_price:
+                            fav_team, fav_price, other_team, other_price = game["away_team"], away_price, game["home_team"], home_price
+                        else:
+                            fav_team, fav_price, other_team, other_price = game["home_team"], home_price, game["away_team"], away_price
+                        favorite_note = (
+                            f" -- market still favors {fav_team} to win despite the tie "
+                            f"({fav_price*100:.0f}% implied vs {other_team}'s {other_price*100:.0f}%)"
+                        )
+                except Exception as e:
+                    print(f"[live_trading] tie alert favorite lookup failed: {e}")
+
                 send_discord_fn(
                     webhook,
                     f"[TIE] {game['away_team']} {away_score} - {home_score} {game['home_team']} "
-                    f"just tied up ({game['league'].upper()}) -- good spot to place a manual bet if you want one."
+                    f"just tied up ({game['league'].upper()}){favorite_note} -- good spot to place a manual bet if you want one."
                 )
                 game["was_tied"] = True
                 changed = True
