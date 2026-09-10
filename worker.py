@@ -109,6 +109,30 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
 SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
+
+# Confirmed live on the real api.sharpapi.io account (2026-09-10, Free
+# plan): 12 requests/minute, and that account had already hit the limit
+# 2,402 times in the prior 7 days -- the scan loop below fires ~11 calls
+# back-to-back with no spacing, so it was blowing the whole per-minute
+# budget in the first couple leagues and then eating 429/retry waits for
+# the rest of the cycle. That reactive retry-after-429 pattern is slower
+# than just not bursting in the first place, so every SharpAPI call now
+# goes through this shared pacer first: it keeps calls at least
+# _SHARPAPI_MIN_GAP_SECONDS apart, comfortably under the 12/min cap
+# (60/12 = 5.0s min; 5.5s leaves a small safety margin), so a full scan
+# should now mostly avoid 429s instead of paying for them after the fact.
+_SHARPAPI_MIN_GAP_SECONDS = 5.5
+_last_sharpapi_call_at = 0.0
+
+
+def _pace_sharpapi_call():
+    global _last_sharpapi_call_at
+    now = time.time()
+    wait = _SHARPAPI_MIN_GAP_SECONDS - (now - _last_sharpapi_call_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_sharpapi_call_at = time.time()
+
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 DAILY_STATE_FILE = os.path.join(DATA_DIR, "daily_trading_state.json")
 SEEN_TRADES_FILE = os.path.join(DATA_DIR, "seen_trades.json")
@@ -408,6 +432,7 @@ def fetch_sharpapi_odds(league):
             params["cursor"] = cursor
 
         for attempt in range(4):
+            _pace_sharpapi_call()
             resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
             if resp.status_code != 429:
                 break
@@ -553,6 +578,7 @@ def fetch_sharpapi_player_props(league):
             params["cursor"] = cursor
         resp = None
         for attempt in range(4):
+            _pace_sharpapi_call()
             resp = requests.get(SHARPAPI_BASE, params=params, headers={"X-API-Key": SHARPAPI_KEY})
             if resp.status_code != 429:
                 break
