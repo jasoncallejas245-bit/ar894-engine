@@ -1,4 +1,4 @@
-# AR894 Engine
+# Picks Engine
 
 An autonomous trading bot for Kalshi prediction markets — sports moneylines (NFL, NCAAF, MLB, UFC, ATP) and a short-window BTC momentum strategy — with a live Flask dashboard, notional paper-trading simulation, and a gated self-adjustment ("learning") layer.
 

@@ -68,7 +68,7 @@ def get_bot_realized_profit():
 # every real stake at total_allocated regardless of P&L -- see above), so
 # there's nothing to "protect" by halting when it dips off a peak. This
 # only cares about money actually lost.
-MAX_LOSS_PERCENT = float(os.getenv("MAX_LOSS_PERCENT", "20.0"))
+MAX_LOSS_PERCENT = float(os.getenv("MAX_LOSS_PERCENT", "35.0"))
 
 
 def get_realized_loss_pct():

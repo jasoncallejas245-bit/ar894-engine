@@ -319,7 +319,7 @@ def get_team_recent_form(league, team_name, num_games=None):
     going through the user's own manual betting history (a year+ of
     Gemini conversations building parlays) showed recent team form and
     the starting-pitcher matchup were the two things actually driving
-    picks, not just the raw sportsbook odds AR894's edge math already
+    picks, not just the raw sportsbook odds Picks' edge math already
     uses. This adds recent form; get_probable_pitcher_note below adds
     the pitcher piece.
 

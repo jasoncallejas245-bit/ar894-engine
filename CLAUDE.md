@@ -1,4 +1,4 @@
-# AR894 Engine — Project Context
+# Picks Engine — Project Context
 
 This file is for any AI assistant (or future you) picking up this project cold. Read it before touching code.
 

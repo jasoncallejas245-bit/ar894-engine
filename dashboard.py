@@ -23,7 +23,7 @@ PAGE_TEMPLATE = """
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AR894 Dashboard</title>
+<title>Picks Dashboard</title>
 <style>
   * { box-sizing: border-box; }
   body { background:#0d1117; color:#e6edf3; font-family:-apple-system,sans-serif; padding:16px; margin:0; max-width:640px; margin:0 auto; }
@@ -58,7 +58,7 @@ PAGE_TEMPLATE = """
 </style>
 </head>
 <body>
-  <h1>AR894</h1>
+  <h1>Picks</h1>
 
   <div class="status {{ 'live' if real_trading_on else 'paused' }}">
     <span class="dot"></span>
@@ -336,7 +336,7 @@ PAGE_TEMPLATE = """
     </div>
   </details>
 
-  <div class="muted" style="margin-top:20px; text-align:center;">AR894 Engine</div>
+  <div class="muted" style="margin-top:20px; text-align:center;">Picks Engine</div>
 </body>
 </html>
 """

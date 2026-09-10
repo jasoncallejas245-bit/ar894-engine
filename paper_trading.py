@@ -429,7 +429,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         # Was close-call-only; now pulled for every pick at the user's
         # request (2026-09-09) -- they check weather/injuries/matchups/
         # pitcher on every bet they place themselves, not just coin-flip
-        # ones, so AR894's picks now carry the same context regardless of
+        # ones, so Picks' picks now carry the same context regardless of
         # how confident the edge looked.
         context_note = None
         try:
@@ -1277,7 +1277,7 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
 # test, on paper, whether the user's own manual approach (stacking 3+
 # moneyline favorites into one combined ticket for a bigger payout
 # multiplier, the pattern found in their Gemini betting history) actually
-# outperforms AR894's normal one-position-at-a-time approach. If this
+# outperforms Picks' normal one-position-at-a-time approach. If this
 # strategy is ever worth acting on for real, it would have to be through a
 # platform that actually supports parlays (e.g. PrizePicks), not this bot.
 # ---------------------------------------------------------------------------

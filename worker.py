@@ -1364,7 +1364,7 @@ def start_dashboard_thread():
 
 def main():
     real_status = "NONE (paused, 100% paper)" if not REAL_TRADING_LEAGUES and not BTC_REAL_TRADING_ENABLED else f"{sorted(REAL_TRADING_LEAGUES)}{' + BTC' if BTC_REAL_TRADING_ENABLED else ''}"
-    print(f"--- AR894 Autonomous Worker (real trading: {real_status} | paper: all leagues + BTC momentum, learning-gated) ---")
+    print(f"--- Picks Autonomous Worker (real trading: {real_status} | paper: all leagues + BTC momentum, learning-gated) ---")
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
