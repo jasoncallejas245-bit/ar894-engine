@@ -648,12 +648,13 @@ def track_moneyline_contract_prices(client):
 # untested experiment: paper-only, tunable/disable-able via env, and its
 # own real performance will show up in contract_price_history + the
 # dashboard once picks resolve this way.
-# Disabled by default (2026-09-10, user request) -- it was cashing out
-# at a flat 92% price regardless of entry price, so cheap-margin entries
-# (already at $0.85-0.93) captured only a few cents after fees instead of
-# riding to actual resolution. Still env-tunable if this is wanted back.
-MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "false").lower() == "true"
-MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.92"))
+# Re-enabled (2026-09-10, user request) with a higher bar: only cash out
+# early once the price is genuinely close to the full $1.00 payout, not
+# the old flat 92% -- that let it cash out with 8+ cents of upside still
+# on the table regardless of how cheap the entry was. 97% means it's
+# already captured essentially all of the possible profit before it exits.
+MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
+MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.97"))
 
 
 def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
