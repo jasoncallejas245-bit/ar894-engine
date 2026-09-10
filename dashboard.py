@@ -313,7 +313,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -351,7 +351,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -430,7 +430,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong> · {{ p.status }}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -450,7 +450,7 @@ PAGE_TEMPLATE = """
       {% for t in all_parlay_tickets[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span></div>
+          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
           <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
           <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
         </div>
@@ -471,7 +471,7 @@ PAGE_TEMPLATE = """
       {% for t in all_prop_tickets[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span></div>
+          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
           <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
           <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
         </div>
@@ -493,7 +493,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
-          <div class="sub">{{ p.opponent }} · contract price ${{ "%.2f"|format(p.entry_price) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong></div>
+          <div class="sub">{{ p.opponent }} · contract price ${{ "%.2f"|format(p.entry_price) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
           <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
         </div>
@@ -722,6 +722,11 @@ def dashboard():
     ]
 
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
+    for _p in all_moneyline_picks:
+        if _p.get("status") == "pending" and (_p.get("entry_price") or 0) > 0:
+            _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
+            _fee = pt._kalshi_taker_fee_dollars_local(_p["entry_price"], _contracts)
+            _p["potential_payout"] = round((1.0 - _p["entry_price"]) * _contracts - _fee, 2)
     too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
     all_recent_picks = list(reversed(sorted(all_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
@@ -735,20 +740,37 @@ def dashboard():
     # sportsbook-consensus probability.
     for _t in all_parlay_tickets:
         _t["combined_prob"] = _t.get("combined_entry_price")
+        if _t.get("status") == "pending" and _t.get("contracts") and _t.get("combined_entry_price") is not None:
+            _t["potential_payout"] = round((1.0 - _t["combined_entry_price"]) * _t["contracts"] - (_t.get("entry_fees") or 0), 2)
     for _t in all_prop_tickets:
         _cp = 1.0
         for _l in _t.get("legs", []):
             _cp *= (_l.get("consensus_prob") or 0.5)
         _t["combined_prob"] = _cp
+        if _t.get("status") == "pending":
+            # Flat 3x-stake stand-in payout -- same rough multiplier
+            # resolve_prop_paper_trades actually pays out, see its own
+            # comment for why this isn't a real PrizePicks-accurate number.
+            _t["potential_payout"] = round((_t.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS) * 3, 2)
 
     # Passing yards -- MAIN FOCUS, at the user's request: its own
     # prominent card near the top of the dashboard (see the template),
     # not buried with the other prop types.
     all_passing_yards_picks = list(reversed(sorted(pt.load_paper_trades().get("passing_yards", []), key=lambda p: p.get("picked_at") or "")))
+    for _p in all_passing_yards_picks:
+        if _p.get("status") == "pending" and (_p.get("entry_price") or 0) > 0:
+            _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
+            _fee = pt._kalshi_taker_fee_dollars_local(_p["entry_price"], _contracts)
+            _p["potential_payout"] = round((1.0 - _p["entry_price"]) * _contracts - _fee, 2)
     passing_yards_summary = summary.get("passing_yards", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
     passing_yards_bank = bankroll.get("passing_yards", {"balance": pt.PAPER_STARTING_BANKROLL})
 
     all_wnba_combined_picks = list(reversed(sorted(pt.load_paper_trades().get("wnba_combined", []), key=lambda p: p.get("picked_at") or "")))
+    for _p in all_wnba_combined_picks:
+        if _p.get("status") == "pending" and (_p.get("entry_price") or 0) > 0:
+            _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
+            _fee = pt._kalshi_taker_fee_dollars_local(_p["entry_price"], _contracts)
+            _p["potential_payout"] = round((1.0 - _p["entry_price"]) * _contracts - _fee, 2)
     wnba_combined_summary = summary.get("wnba_combined", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
     wnba_combined_bank = bankroll.get("wnba_combined", {"balance": pt.PAPER_STARTING_BANKROLL})
 
@@ -877,6 +899,12 @@ def dashboard():
             timing_label, timing_value = "Game starts", _fmt_countdown(p.get("event_start_time"))
         else:
             timing_label, timing_value = "Status", "in progress (live pick)"
+        _price = p.get("entry_price") or 0
+        _payout = None
+        if _price > 0:
+            _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _price)
+            _fee = pt._kalshi_taker_fee_dollars_local(_price, _contracts)
+            _payout = round((1.0 - _price) * _contracts - _fee, 2)
         pending_picks.append({
             "name": p.get("picked_team"), "category": p.get("league", "?"),
             "opponent": f"{p.get('away_team')} @ {p.get('home_team')}",
@@ -884,6 +912,9 @@ def dashboard():
             "timing_label": timing_label, "timing_value": timing_value,
             "entry_price": p.get("entry_price") or 0,
             "manual_bet_candidate": p.get("manual_bet_candidate"),
+            "bet_tier": p.get("bet_tier"),
+            "pick_score": p.get("pick_score") or 0,
+            "potential_payout": _payout,
         })
 
     activity = {
