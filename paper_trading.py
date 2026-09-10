@@ -1446,23 +1446,25 @@ PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba"}
 
 def _parse_player_prop_row(row):
     """
-    Best-effort extraction from one SharpAPI player-prop row. Tries a
-    few plausible field-name variants since the exact schema isn't
-    confirmed (see fetch_sharpapi_player_props's docstring) -- returns
-    None rather than guessing if it can't confidently parse the row.
+    Extraction from one SharpAPI player-prop row. Field names confirmed
+    2026-09-10 against SharpAPI's published OpenAPI spec (docs.sharpapi.io/openapi.json):
+    player_name, stat_category, line, selection ("Over"/"Under"),
+    probability, plus the same event_id/away_team/home_team/sportsbook
+    fields the main-line moneyline rows already use. A couple of older
+    guessed field names are kept as a fallback in case a given row uses
+    them instead, but the confirmed names are tried first. Returns None
+    rather than guessing if it can't confidently parse the row.
     """
     try:
-        player = row.get("player") or row.get("player_name") or row.get("athlete") or row.get("selection_player")
-        stat = row.get("stat") or row.get("stat_type") or row.get("market_subtype") or row.get("prop_type")
+        player = row.get("player_name") or row.get("player") or row.get("athlete")
+        stat = row.get("stat_category") or row.get("stat_type") or row.get("prop_type")
         line = row.get("line")
         if line is None:
             line = row.get("point")
-        if line is None:
-            line = row.get("handicap")
-        side = row.get("side") or row.get("selection") or row.get("outcome")
-        prob = row.get("implied_probability")
+        side = row.get("selection") or row.get("side") or row.get("outcome")
+        prob = row.get("probability")
         if prob is None:
-            prob = row.get("probability")
+            prob = row.get("implied_probability")
         if not player or not stat or line is None or not side:
             return None
         side_norm = str(side).strip().lower()

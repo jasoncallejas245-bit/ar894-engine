@@ -521,7 +521,7 @@ def fetch_sharpapi_player_props(league):
     cursor = None
     logged_sample = False
     for page_num in range(SHARPAPI_MAX_PAGES):
-        params = {"league": league, "market": "player_props", "limit": 200}
+        params = {"league": league, "market": "player_prop", "limit": 200}
         if cursor:
             params["cursor"] = cursor
         resp = None
