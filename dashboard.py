@@ -10,6 +10,73 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 
 app = Flask(__name__)
 
+
+def _build_pnl_chart_svg(points, width=560, height=140):
+    """
+    Small dependency-free SVG line chart of cumulative hypothetical P&L
+    across every resolved paper pick, oldest to newest -- a PrizePicks-
+    style "how am I doing" trend line, rendered server-side so the
+    dashboard doesn't need a JS charting library. `points` is a list of
+    running totals, starting at 0. Never raises -- returns a placeholder
+    SVG on bad input rather than crashing the whole page.
+    """
+    try:
+        if not points or len(points) < 2:
+            return (
+                '<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block;">'
+                '<text x="{cx}" y="{cy}" text-anchor="middle" fill="#8b949e" font-size="13">'
+                'Not enough resolved picks yet for a trend line.</text></svg>'
+            ).format(w=width, h=height, cx=width / 2, cy=height / 2)
+
+        pad = 10
+        lo, hi = min(points), max(points)
+        span = (hi - lo) or 1.0
+        n = len(points)
+
+        def x_of(i):
+            return pad + (i / (n - 1)) * (width - 2 * pad)
+
+        def y_of(v):
+            return pad + (1 - (v - lo) / span) * (height - 2 * pad)  # inverted -- SVG y grows downward
+
+        coords = [(x_of(i), y_of(v)) for i, v in enumerate(points)]
+        path_d = "M " + " L ".join("{:.1f},{:.1f}".format(x, y) for x, y in coords)
+
+        zero_y = y_of(0.0) if lo <= 0.0 <= hi else None
+        baseline_y = zero_y if zero_y is not None else (height - pad)
+        zero_line = ""
+        if zero_y is not None:
+            zero_line = (
+                '<line x1="{p}" y1="{y:.1f}" x2="{w}" y2="{y:.1f}" '
+                'stroke="#30363d" stroke-width="1" stroke-dasharray="4,4" />'
+            ).format(p=pad, w=width - pad, y=zero_y)
+
+        final_v = points[-1]
+        line_color = "#3fb950" if final_v >= 0 else "#f85149"
+        fill_id = "pnlFillPos" if final_v >= 0 else "pnlFillNeg"
+        last_x, last_y = coords[-1]
+        first_x = coords[0][0]
+
+        area_d = "{path} L {lx:.1f},{by:.1f} L {fx:.1f},{by:.1f} Z".format(
+            path=path_d, lx=last_x, by=baseline_y, fx=first_x
+        )
+
+        svg_parts = []
+        svg_parts.append('<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block; overflow:visible;">'.format(w=width, h=height))
+        svg_parts.append('<defs><linearGradient id="{fid}" x1="0" y1="0" x2="0" y2="1">'.format(fid=fill_id))
+        svg_parts.append('<stop offset="0%" stop-color="{c}" stop-opacity="0.28" />'.format(c=line_color))
+        svg_parts.append('<stop offset="100%" stop-color="{c}" stop-opacity="0" />'.format(c=line_color))
+        svg_parts.append('</linearGradient></defs>')
+        svg_parts.append(zero_line)
+        svg_parts.append('<path d="{d}" fill="url(#{fid})" stroke="none" />'.format(d=area_d, fid=fill_id))
+        svg_parts.append('<path d="{d}" fill="none" stroke="{c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />'.format(d=path_d, c=line_color))
+        svg_parts.append('<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{c}" />'.format(x=last_x, y=last_y, c=line_color))
+        svg_parts.append('</svg>')
+        return "".join(svg_parts)
+    except Exception as e:
+        print(f"[dashboard] chart render failed: {e}")
+        return '<svg viewBox="0 0 {w} {h}" width="100%" height="{h}"></svg>'.format(w=width, h=height)
+
 # ---------------------------------------------------------------------------
 # Design intent: minimalist but functional. One glance should answer three
 # questions -- is real money at risk right now, is the paper simulation
@@ -143,6 +210,32 @@ PAGE_TEMPLATE = """
       </div>
     </div>
     {% endfor %}
+  </div>
+
+  <div class="card">
+    <h3>📈 Performance -- Cumulative Hypothetical P&amp;L</h3>
+    <div class="sub" style="margin-bottom:10px;">Every resolved paper pick across all strategies, oldest to newest -- same idea as a PrizePicks results chart, just built from our own paper-trade ledger.</div>
+    <div class="row" style="margin-bottom:10px;">
+      <div>
+        <span class="label">Net P&amp;L</span>
+        <span class="big {{ 'green' if net_pnl >= 0 else 'red' }}" style="font-size:1.3em; margin-left:6px;">${{ "%.2f"|format(net_pnl) }}</span>
+      </div>
+      <div class="sub">{{ total_resolved_count }} resolved pick{{ '' if total_resolved_count == 1 else 's' }}</div>
+    </div>
+    {{ chart_svg|safe }}
+
+    {% if parlay_leg_breakdown %}
+    <div style="margin-top:16px;">
+      <div class="sub" style="margin-bottom:6px;">Parlay leg-count breakdown -- which combo size is actually working:</div>
+      {% for b in parlay_leg_breakdown %}
+      <div class="row" style="border-bottom:1px solid #21262d; padding-bottom:6px; margin-bottom:6px;">
+        <span>{{ b.leg_count }}-leg</span>
+        <span class="sub">{{ b.resolved }} resolved{% if b.win_rate is not none %} · {{ "%.0f"|format(b.win_rate) }}% won{% endif %}</span>
+        <span class="{{ 'green' if b.total_pnl >= 0 else 'red' }}">${{ "%.2f"|format(b.total_pnl) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
   <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
@@ -500,9 +593,9 @@ def dashboard():
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - parlay_bank["balance"]),
             "settings": [
                 {
-                    "label": "Legs per ticket",
-                    "value": f"{pt.PARLAY_LEG_COUNT}",
-                    "explanation": "Bundles this many of the cycle's strongest qualifying single-position picks into one all-or-nothing combined ticket, mirroring how the user builds parlays manually.",
+                    "label": "Leg-count combos tried",
+                    "value": ", ".join(str(n) for n in sorted(set(pt.PARLAY_LEG_COUNTS))),
+                    "explanation": "Builds one ticket per leg count every cycle, reusing the same ranked candidate pool for each (2-leg is the top 2 picks, 3-leg adds the next-best, etc.), so it's clear from real data which size actually pays off -- see the leg-count breakdown below.",
                 },
                 {
                     "label": "Heaviest favorite allowed per leg",
@@ -698,6 +791,35 @@ def dashboard():
     bot_pnl_data = ledger.load_bot_pnl()
     current_loss_pct = ledger.get_realized_loss_pct()
 
+    # Performance chart -- PrizePicks-style running P&L across every
+    # resolved paper pick, every category combined, oldest to newest.
+    all_trades_data = pt.load_paper_trades()
+    resolved_events = []
+    for p in all_trades_data.get("moneyline", []):
+        if p.get("status") in ("won", "lost") and p.get("resolved_at"):
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+    for p in all_trades_data.get("passing_yards", []):
+        if p.get("status") in ("won", "lost") and p.get("resolved_at"):
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+    for t in all_trades_data.get("parlay", []):
+        if t.get("status") in ("won", "lost") and t.get("resolved_at"):
+            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0))
+    for t in all_trades_data.get("props", []):
+        if t.get("status") in ("won", "lost") and t.get("resolved_at"):
+            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0))
+    resolved_events.sort(key=lambda e: e[0])
+
+    running = 0.0
+    pnl_points = [0.0]
+    for _, pnl in resolved_events:
+        running += pnl
+        pnl_points.append(round(running, 2))
+    chart_svg = _build_pnl_chart_svg(pnl_points)
+    total_resolved_count = len(resolved_events)
+    net_pnl = pnl_points[-1] if pnl_points else 0.0
+
+    parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
+
     return render_template_string(
         PAGE_TEMPLATE,
         balance=balance,
@@ -730,6 +852,10 @@ def dashboard():
         loss_limit_percent=ledger.MAX_LOSS_PERCENT,
         current_loss_pct=current_loss_pct,
         activity=activity,
+        chart_svg=chart_svg,
+        total_resolved_count=total_resolved_count,
+        net_pnl=net_pnl,
+        parlay_leg_breakdown=parlay_leg_breakdown,
     )
 
 

@@ -192,15 +192,22 @@ def _record_error_log(message):
 _discord_queue = defaultdict(list)
 _discord_queue_lock = threading.Lock()
 
-# Batching alone (grouping one cycle's messages into one slip) isn't
-# enough on its own -- with a short SCAN_INTERVAL_SECONDS, a new
-# single-item "slip" every cycle can still read as constant back-to-back
-# messages. This adds a real minimum time gap between actual sends, per
-# webhook, independent of scan cadence: whatever's queued just keeps
-# accumulating until this much time has passed since the last send, so
-# messages actually come in spaced-out batches instead of on every cycle.
-DISCORD_SLIP_MIN_INTERVAL_SECONDS = int(os.getenv("DISCORD_SLIP_MIN_INTERVAL_SECONDS", "900"))
+# Betting picks/trades (DISCORD_WEBHOOK_BETS) send as soon as they're
+# flushed -- one combined message per cycle if several fire in the same
+# cycle, but never HELD to wait for a bigger batch (2026-09-10, at the
+# user's explicit request: no delay on bet notifications, they want to
+# know right away). Status/error/resolution noise on
+# DISCORD_WEBHOOK_UPDATES still gets a real minimum gap between sends,
+# independent of scan cadence, so THAT channel doesn't spam every cycle.
+DISCORD_BETS_SLIP_MIN_INTERVAL_SECONDS = int(os.getenv("DISCORD_BETS_SLIP_MIN_INTERVAL_SECONDS", "0"))
+DISCORD_UPDATES_SLIP_MIN_INTERVAL_SECONDS = int(os.getenv("DISCORD_UPDATES_SLIP_MIN_INTERVAL_SECONDS", "900"))
 _last_flush_at = defaultdict(float)  # webhook_url -> time.monotonic() of last actual send
+
+
+def _slip_min_interval(webhook_url):
+    if webhook_url == DISCORD_WEBHOOK_BETS:
+        return DISCORD_BETS_SLIP_MIN_INTERVAL_SECONDS
+    return DISCORD_UPDATES_SLIP_MIN_INTERVAL_SECONDS
 
 
 def send_discord(webhook_url, message, _retries=3, immediate=False):
@@ -237,8 +244,9 @@ def _send_discord_now(webhook_url, message, _retries=3):
 
 def flush_discord_queue(force=False):
     """Sends whatever's queued as one grouped, slip-style message per
-    webhook (numbered list, bet-slip style) -- but no more often than
-    every DISCORD_SLIP_MIN_INTERVAL_SECONDS per webhook, regardless of
+    webhook (numbered list, bet-slip style) -- betting picks flush every
+    cycle with no added delay; status/error updates get a real minimum
+    gap (see _slip_min_interval), regardless of
     how often this gets called (once per scan cycle). A webhook not yet
     due just keeps its messages queued for the next call that IS due --
     nothing is lost, only delayed and grouped further, which is the
@@ -254,7 +262,7 @@ def flush_discord_queue(force=False):
         for url, msgs in list(_discord_queue.items()):
             if not msgs:
                 continue
-            if force or (now - _last_flush_at[url]) >= DISCORD_SLIP_MIN_INTERVAL_SECONDS:
+            if force or (now - _last_flush_at[url]) >= _slip_min_interval(url):
                 due[url] = msgs
                 _discord_queue[url] = []
                 _last_flush_at[url] = now

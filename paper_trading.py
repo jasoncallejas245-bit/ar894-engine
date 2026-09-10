@@ -10,11 +10,14 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = os.path.join(DATA_DIR, "paper_trades.json")
 PAPER_BANKROLL_FILE = os.path.join(DATA_DIR, "paper_bankroll.json")
 
-# Every paper trade now sizes itself like a real $5 bet, instead of the old
-# "1 contract at entry price" math -- so the logged hypothetical P&L reflects
-# what would actually happen if this pick had been placed for real at the
-# stake size this bot actually uses.
-PAPER_STAKE_DOLLARS = float(os.getenv("PAPER_STAKE_DOLLARS", "5.0"))
+# Every paper trade sizes itself like a real bet of this size, instead of
+# the old "1 contract at entry price" math -- so the logged hypothetical
+# P&L reflects what would actually happen if this pick had been placed
+# for real at the stake size this bot actually uses. Raised from $5 to
+# $15 on 2026-09-10 at the user's request -- $5 winnings looked too
+# small to read as meaningful on the dashboard; $15+ makes the paper P&L
+# numbers actually informative.
+PAPER_STAKE_DOLLARS = float(os.getenv("PAPER_STAKE_DOLLARS", "15.0"))
 
 # Starting notional bankroll per category, purely for tracking "are we up or
 # down against a hypothetical budget" over time -- has no bearing on real
@@ -522,10 +525,10 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
         pick["resolved_at"] = datetime.now().isoformat()
 
         if pick.get("entry_price"):
-            # $5-stake simulation: same sizing math real trading uses
+            # Fixed-stake simulation: same sizing math real trading uses
             # (stake_dollars / price, minimum 1 contract), not the old
             # "1 contract at entry_price" model, so the hypothetical P&L
-            # reflects what a real $5 bet on this pick would have made.
+            # reflects what a real bet of this size on this pick would have made.
             contracts = max(1.0, PAPER_STAKE_DOLLARS / pick["entry_price"])
             pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
             pick["contracts"] = contracts
@@ -811,7 +814,19 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
 # ---------------------------------------------------------------------------
 
 PARLAY_ENABLED = os.getenv("PARLAY_PAPER_ENABLED", "true").lower() == "true"
-PARLAY_LEG_COUNT = int(os.getenv("PARLAY_LEG_COUNT", "3"))
+# Changed 2026-09-10, at the user's request: instead of ALWAYS bundling
+# exactly 3 legs, build one ticket for EVERY leg count in this list each
+# cycle (when there are enough eligible legs), reusing the same ranked
+# candidate pool -- a 2-leg ticket is just the top 2, a 3-leg ticket is
+# the top 2 plus the next-best leg, and so on. Same picks, different
+# combos, so leg-count profitability can be compared directly on real
+# data instead of guessed at (see get_parlay_leg_count_breakdown /
+# the dashboard's parlay chart) -- basic parlay math says win
+# probability multiplies down fast as legs are added (each extra leg is
+# another independent chance to bust), so more legs is a real bet that
+# the bigger payout multiplier is worth the much lower hit rate. Data
+# answers that, not a guess.
+PARLAY_LEG_COUNTS = [int(n) for n in os.getenv("PARLAY_LEG_COUNTS", "2,3,4,5,6").split(",") if n.strip()]
 # Mirrors a real lesson from the user's own betting history: a leg priced
 # heavier than this (e.g. a -300 favorite, ~0.75+ on Kalshi) eats up parlay
 # payout value without adding much safety, so it gets skipped in favor of
@@ -823,69 +838,112 @@ def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
     """
     Runs once per sports-scan cycle in worker.py, fed that cycle's newly
     made single-position picks (across every league) as candidate_picks.
-    If there are enough qualifying legs (real edge, not too heavy a
-    favorite -- see PARLAY_MAX_LEG_PRICE), bundles the strongest
-    PARLAY_LEG_COUNT of them into one combined paper parlay ticket,
-    tracked in its own "parlay" bankroll -- completely separate from
-    those same picks' own single-position tracking, which continues
-    exactly as before. One picked game can appear in both a single
-    position AND a parlay leg; they're independent records answering
-    different questions. Never raises.
+    Builds ONE ticket per leg count in PARLAY_LEG_COUNTS that has enough
+    qualifying legs (real edge, not too heavy a favorite -- see
+    PARLAY_MAX_LEG_PRICE), each tracked in the same "parlay" bankroll but
+    tagged with its own leg_count so a 2-leg strategy and a 6-leg
+    strategy can be judged separately. Legs are reused across ticket
+    sizes (same ranked pool, different cutoffs) -- completely separate
+    from those same picks' own single-position tracking, which continues
+    exactly as before. One picked game can appear in a single position
+    AND several parlay legs at once; they're independent records
+    answering different questions. Returns the list of tickets made this
+    cycle (may be empty). Never raises.
     """
-    if not PARLAY_ENABLED:
-        return None
+    if not PARLAY_ENABLED or not PARLAY_LEG_COUNTS:
+        return []
     try:
         eligible = [
             p for p in candidate_picks
             if p.get("kalshi_ticker") and p.get("entry_price") and p["entry_price"] <= PARLAY_MAX_LEG_PRICE
         ]
-        if len(eligible) < PARLAY_LEG_COUNT:
-            return None
-
         eligible.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
-        legs = eligible[:PARLAY_LEG_COUNT]
 
-        combined_price = 1.0
-        for leg in legs:
-            combined_price *= leg["entry_price"]
-        combined_price = max(0.0001, combined_price)
-
-        contracts = max(1.0, PAPER_STAKE_DOLLARS / combined_price)
-        entry_fees = sum(_kalshi_taker_fee_dollars_local(leg["entry_price"], contracts) for leg in legs)
-
-        ticket = {
-            "ticket_id": f"parlay-{datetime.now().isoformat()}",
-            "legs": [
-                {
-                    "league": leg["league"], "picked_team": leg["picked_team"],
-                    "kalshi_ticker": leg["kalshi_ticker"], "event_id": leg.get("event_id"),
-                    "entry_price": leg["entry_price"], "edge_pct": leg.get("edge_pct"),
-                }
-                for leg in legs
-            ],
-            "combined_entry_price": round(combined_price, 6),
-            "contracts": contracts,
-            "entry_fees": round(entry_fees, 4),
-            "stake_dollars": round(combined_price * contracts, 4),
-            "picked_at": datetime.now().isoformat(),
-            "status": "pending",
-        }
+        tickets = []
         paper_data = load_paper_trades()
-        paper_data["parlay"].append(ticket)
+        for leg_count in sorted(set(PARLAY_LEG_COUNTS)):
+            if len(eligible) < leg_count:
+                continue
+            legs = eligible[:leg_count]
+
+            combined_price = 1.0
+            for leg in legs:
+                combined_price *= leg["entry_price"]
+            combined_price = max(0.0001, combined_price)
+
+            contracts = max(1.0, PAPER_STAKE_DOLLARS / combined_price)
+            entry_fees = sum(_kalshi_taker_fee_dollars_local(leg["entry_price"], contracts) for leg in legs)
+
+            ticket = {
+                "ticket_id": f"parlay-{leg_count}leg-{datetime.now().isoformat()}",
+                "leg_count": leg_count,
+                "legs": [
+                    {
+                        "league": leg["league"], "picked_team": leg["picked_team"],
+                        "kalshi_ticker": leg["kalshi_ticker"], "event_id": leg.get("event_id"),
+                        "entry_price": leg["entry_price"], "edge_pct": leg.get("edge_pct"),
+                    }
+                    for leg in legs
+                ],
+                "combined_entry_price": round(combined_price, 6),
+                "contracts": contracts,
+                "entry_fees": round(entry_fees, 4),
+                "stake_dollars": round(combined_price * contracts, 4),
+                "picked_at": datetime.now().isoformat(),
+                "status": "pending",
+            }
+            paper_data.setdefault("parlay", []).append(ticket)
+            tickets.append(ticket)
+
+        if not tickets:
+            return []
+
         save_paper_trades(paper_data)
 
         if send_discord_fn and webhook:
-            leg_lines = "\n".join(f"  - {l['picked_team']} ({l['league']}) @ ${l['entry_price']:.2f}" for l in legs)
-            potential = round(contracts * (1.0 - combined_price), 2)
-            send_discord_fn(
-                webhook,
-                f"[PAPER PARLAY] New {len(legs)}-leg ticket, ${ticket['stake_dollars']:.2f} to win ${potential:+.2f}:\n{leg_lines}\n"
-                f"(Paper only -- Kalshi has no real parlay product, this is comparison data only)"
-            )
-        return ticket
+            lines = [f"[PAPER PARLAY] {len(tickets)} new ticket(s) this cycle (2-6 leg combos, same candidate pool):"]
+            for ticket in tickets:
+                potential = round(ticket["contracts"] * (1.0 - ticket["combined_entry_price"]), 2)
+                leg_names = ", ".join(f"{l['picked_team']} ({l['league']})" for l in ticket["legs"])
+                lines.append(f"  {ticket['leg_count']}-leg, ${ticket['stake_dollars']:.2f} to win ${potential:+.2f}: {leg_names}")
+            lines.append("(Paper only -- Kalshi has no real parlay product, this is comparison data only)")
+            send_discord_fn(webhook, "\n".join(lines))
+        return tickets
     except Exception as e:
         print(f"[paper_trading] maybe_make_parlay_pick error: {e}")
-        return None
+        return []
+
+
+def get_parlay_leg_count_breakdown():
+    """
+    Groups resolved parlay tickets by leg_count so it's clear which
+    ticket size is actually profitable on paper, not just guessed at.
+    Tickets from before leg_count was tracked (2026-09-10) are grouped
+    under leg_count 3, the old fixed size, since that's what they were.
+    Returns a list of dicts sorted by leg_count, each with resolved
+    count, win rate, and total hypothetical P&L.
+    """
+    paper_data = load_paper_trades()
+    by_count = {}
+    for t in paper_data.get("parlay", []):
+        if t["status"] not in ("won", "lost"):
+            continue
+        lc = t.get("leg_count", 3)
+        by_count.setdefault(lc, {"resolved": 0, "wins": 0, "pnl": 0.0})
+        by_count[lc]["resolved"] += 1
+        if t["status"] == "won":
+            by_count[lc]["wins"] += 1
+        by_count[lc]["pnl"] += t.get("hypothetical_pnl") or 0.0
+
+    return [
+        {
+            "leg_count": lc,
+            "resolved": v["resolved"],
+            "win_rate": (v["wins"] / v["resolved"] * 100) if v["resolved"] else None,
+            "total_pnl": round(v["pnl"], 2),
+        }
+        for lc, v in sorted(by_count.items())
+    ]
 
 
 def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
@@ -1320,7 +1378,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
 def resolve_passing_yards_picks(send_discord_fn=None, webhook=None):
     """
     Checks each pending passing-yards pick against the real final ESPN
-    box score and computes what a real $5 bet would have made, same
+    box score and computes what a real bet of this size would have made, same
     staking/fee math resolve_moneyline_paper_trades uses. Never guesses
     -- a game that isn't final yet, or a player ESPN's box score doesn't
     have a passing-yards number for, is left pending rather than marked
