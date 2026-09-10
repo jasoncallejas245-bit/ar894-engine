@@ -464,10 +464,45 @@ def get_context_note(league, away_team, home_team):
 # NOT yet confirmed live -- best guess based on ESPN's typical format,
 # same "watch for errors, fix if wrong" approach used for adding NBA to
 # moneyline scanning.
+# Each entry is (label, required_group_name_or_None). group_name matters
+# for NFL/NCAAF -- ESPN's box score reliably separates "passing",
+# "rushing", "receiving" as distinct named stat groups (confirmed live
+# 2026-09-10), each with its own "YDS"/"TD" labels, so without checking
+# the group name a rushing-yards leg could accidentally read a
+# passing-yards number for a player who has both. MLB/NBA/WNBA don't
+# need this (their groups aren't reliably named, but their labels don't
+# collide across groups the way NFL's do), so group_name is None there.
 _BOXSCORE_STAT_LABELS = {
-    "mlb": {"hits": "H", "home_runs": "HR", "rbis": "RBI", "runs": "R", "walks": "BB", "strikeouts": "K"},
-    "nba": {"points": "PTS", "rebounds": "REB", "assists": "AST", "3-pointers made": "3PM", "steals": "STL", "blocks": "BLK"},
-    "wnba": {"points": "PTS", "rebounds": "REB", "assists": "AST", "3-pointers made": "3PM", "steals": "STL", "blocks": "BLK"},
+    "mlb": {
+        "hits": ("H", None), "home_runs": ("HR", None), "rbis": ("RBI", None),
+        "runs": ("R", None), "walks": ("BB", None), "strikeouts": ("K", None),
+    },
+    "nba": {
+        "points": ("PTS", None), "rebounds": ("REB", None), "assists": ("AST", None),
+        "3-pointers made": ("3PM", None), "steals": ("STL", None), "blocks": ("BLK", None),
+    },
+    "wnba": {
+        "points": ("PTS", None), "rebounds": ("REB", None), "assists": ("AST", None),
+        "3-pointers made": ("3PM", None), "steals": ("STL", None), "blocks": ("BLK", None),
+    },
+    # NFL/NCAAF stat_category label guesses are UNVERIFIED against real
+    # SharpAPI player-prop data yet (unlike MLB/NBA/WNBA, which were
+    # confirmed live 2026-09-10) -- same safe-fail approach as everywhere
+    # else here: a mismatched key just means "needs_manual_check" for
+    # that leg, never a wrong grade. Check /debug/props_sample after
+    # deploy and adjust these keys to match the real values if needed.
+    "nfl": {
+        "passing_yards": ("YDS", "passing"), "rushing_yards": ("YDS", "rushing"),
+        "receiving_yards": ("YDS", "receiving"), "receptions": ("REC", "receiving"),
+        "passing_touchdowns": ("TD", "passing"), "rushing_touchdowns": ("TD", "rushing"),
+        "receiving_touchdowns": ("TD", "receiving"), "interceptions": ("INT", "passing"),
+    },
+    "ncaaf": {
+        "passing_yards": ("YDS", "passing"), "rushing_yards": ("YDS", "rushing"),
+        "receiving_yards": ("YDS", "receiving"), "receptions": ("REC", "receiving"),
+        "passing_touchdowns": ("TD", "passing"), "rushing_touchdowns": ("TD", "rushing"),
+        "receiving_touchdowns": ("TD", "receiving"), "interceptions": ("INT", "passing"),
+    },
 }
 
 
@@ -525,15 +560,18 @@ def get_player_boxscore_stat(league, event_id, player_name, stat_type):
     """
     path = ESPN_LEAGUE_PATHS.get(league)
     label_map = _BOXSCORE_STAT_LABELS.get(league, {})
-    target_label = label_map.get(stat_type)
-    if not path or not target_label or not event_id:
+    label_entry = label_map.get(stat_type)
+    if not path or not label_entry or not event_id:
         return None, False
+    target_label, required_group = label_entry
     try:
         data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary", params={"event": event_id})
         box = data.get("boxscore", {})
         target_norm = _normalize(player_name)
         for team in box.get("players", []):
             for stat_group in team.get("statistics", []):
+                if required_group and stat_group.get("name") != required_group:
+                    continue
                 labels = stat_group.get("labels", [])
                 if target_label not in labels:
                     continue

@@ -1441,7 +1441,17 @@ def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
 PROP_PICKS_ENABLED = os.getenv("PROP_PICKS_PAPER_ENABLED", "true").lower() == "true"
 PROP_LEG_COUNT = int(os.getenv("PROP_LEG_COUNT", "4"))
 PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.55"))
-PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba"}
+# NFL/NCAAF added 2026-09-10, at the user's request (they specifically
+# want passing-yards picks) -- previously excluded over a real concern
+# that ESPN's box score could mix up passing/rushing/receiving yards,
+# but that's now checked live: ESPN reliably separates those into
+# distinct named stat groups, so context_data.get_player_boxscore_stat
+# now matches the group name too, not just the label. What's still
+# unverified is SharpAPI's exact stat_category string for NFL props
+# (e.g. whether it's "passing_yards" or something else) -- same
+# safe-fail approach as everywhere else: wrong guess just means
+# "needs_manual_check," never a wrong grade.
+PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba", "nfl", "ncaaf"}
 
 
 def _parse_player_prop_row(row):
@@ -1661,3 +1671,56 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
             save_paper_trades(paper_data)
     except Exception as e:
         print(f"[paper_trading] resolve_prop_paper_trades error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Profitability milestone alerts (NEW 2026-09-10, at the user's request)
+#
+# Every paper pick across every category is already tracked with full
+# outcome data (win/loss, hypothetical P&L) -- this doesn't add new
+# tracking, it watches the tracking that already exists and speaks up
+# the moment a category has BOTH a real sample size AND genuine profit,
+# so the user knows when there's an actual case for turning real money
+# on for that strategy -- instead of having to keep checking manually.
+#
+# IMPORTANT: this only ALERTS. It never turns real trading on by itself
+# -- that's a real-money decision that needs the user's explicit
+# go-ahead every time, not something this bot decides on its own.
+# ---------------------------------------------------------------------------
+PROFITABILITY_ALERTS_FILE = os.path.join(DATA_DIR, "profitability_alerts.json")
+
+
+def check_profitability_milestones(send_discord_fn=None, webhook=None):
+    """
+    Runs once per cycle. For each category (moneyline/btc/parlay/props),
+    checks whether it has crossed BOTH a real sample size
+    (MIN_SAMPLE_FOR_ADJUSTMENT resolved picks) and genuine profit
+    (total_hypothetical_pnl > 0) for the first time -- alerts once per
+    category, never repeats, so this doesn't nag every cycle after the
+    first crossing. Never raises.
+    """
+    try:
+        already_alerted = safe_read_json(PROFITABILITY_ALERTS_FILE, {})
+        summary = get_paper_trade_summary()
+        changed = False
+        for category, stats in summary.items():
+            if already_alerted.get(category):
+                continue
+            resolved = stats.get("resolved", 0)
+            pnl = stats.get("total_hypothetical_pnl")
+            if resolved >= MIN_SAMPLE_FOR_ADJUSTMENT and pnl is not None and pnl > 0:
+                already_alerted[category] = {"at": datetime.now().isoformat(), "resolved": resolved, "pnl": pnl}
+                changed = True
+                if send_discord_fn and webhook:
+                    win_rate = stats.get("win_rate") or 0.0
+                    send_discord_fn(
+                        webhook,
+                        f"[PROFITABLE] {category.upper()} just crossed {resolved} resolved picks showing REAL "
+                        f"hypothetical profit: ${pnl:+.2f} ({win_rate:.1f}% correct). Worth reviewing for turning "
+                        f"on real-money trading -- I won't flip that on by myself, just flagging that the data "
+                        f"now supports the conversation."
+                    )
+        if changed:
+            atomic_write_json(PROFITABILITY_ALERTS_FILE, already_alerted)
+    except Exception as e:
+        print(f"[paper_trading] check_profitability_milestones error: {e}")
