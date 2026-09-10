@@ -25,40 +25,59 @@ PAGE_TEMPLATE = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Picks Dashboard</title>
 <style>
-  * { box-sizing: border-box; }
-  body { background:#0d1117; color:#e6edf3; font-family:-apple-system,sans-serif; padding:16px; margin:0; max-width:640px; margin:0 auto; }
-  h1 { font-size:1.2em; margin:0 0 12px 0; }
-  h3 { font-size:0.75em; text-transform:uppercase; letter-spacing:0.04em; color:#8b949e; margin:0 0 10px 0; }
-  .status { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:10px; font-weight:600; font-size:0.9em; margin-bottom:16px; }
-  .status.paused { background:#3b2205; color:#e3b341; border:1px solid #9e6a03; }
-  .status.live { background:#0d2818; color:#3fb950; border:1px solid #238636; }
-  .dot { width:8px; height:8px; border-radius:50%; background:currentColor; flex-shrink:0; }
-  .card { background:#161b22; border:1px solid #21262d; border-radius:12px; padding:16px; margin-bottom:12px; }
-  .row { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; font-size:0.9em; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background:#0a0e14; background-image:radial-gradient(circle at 15% 0%, rgba(88,101,242,0.10), transparent 40%), radial-gradient(circle at 85% 8%, rgba(63,185,80,0.07), transparent 35%);
+    color:#e6edf3; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:16px 16px 40px; margin:0; max-width:640px; margin-left:auto; margin-right:auto;
+    -webkit-font-smoothing:antialiased;
+  }
+  .header { display:flex; align-items:center; gap:12px; margin:4px 0 18px 0; }
+  .logo { width:38px; height:38px; border-radius:11px; flex-shrink:0; background:linear-gradient(135deg,#6e7bff,#3fb950); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:1.05em; color:#0a0e14; box-shadow:0 4px 14px rgba(88,101,242,0.35); }
+  h1 { font-size:1.25em; margin:0; letter-spacing:-0.01em; font-weight:700; }
+  .tagline { font-size:0.78em; color:#8b949e; margin-top:1px; }
+  h3 { font-size:0.74em; text-transform:uppercase; letter-spacing:0.06em; color:#8b949e; margin:0 0 10px 0; font-weight:700; }
+  .status { display:flex; align-items:center; gap:9px; padding:11px 15px; border-radius:12px; font-weight:600; font-size:0.9em; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.18); }
+  .status.paused { background:linear-gradient(135deg,#3b2a05,#2a1e07); color:#e3b341; border:1px solid #9e6a03; }
+  .status.live { background:linear-gradient(135deg,#0d2818,#0e1f16); color:#3fb950; border:1px solid #238636; }
+  .dot { width:8px; height:8px; border-radius:50%; background:currentColor; flex-shrink:0; box-shadow:0 0 8px currentColor; }
+  .card {
+    background:#12161f; border:1px solid #232a36; border-radius:16px; padding:17px;
+    margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,0.3); transition:border-color 0.15s ease;
+  }
+  .row { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; font-size:0.9em; gap:10px; }
   .row:last-child { margin-bottom:0; }
   .row .label { color:#8b949e; }
-  .big { font-size:1.9em; font-weight:700; line-height:1.1; }
+  .big { font-size:1.95em; font-weight:800; line-height:1.1; font-variant-numeric:tabular-nums; letter-spacing:-0.01em; }
   .green { color:#3fb950; }
   .red { color:#f85149; }
   .muted { color:#8b949e; font-size:0.82em; }
-  .sub { color:#8b949e; font-size:0.8em; margin-top:2px; }
-  .badge { font-size:0.72em; padding:2px 8px; border-radius:10px; background:#21262d; color:#8b949e; }
+  .sub { color:#8b949e; font-size:0.8em; margin-top:2px; line-height:1.4; }
+  .badge { font-size:0.71em; padding:3px 9px; border-radius:20px; background:#1c2333; color:#9aa6c7; border:1px solid #2a3348; font-weight:600; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width:480px) { .grid2 { grid-template-columns:1fr; } }
-  .bar { background:#21262d; border-radius:6px; height:6px; overflow:hidden; margin-top:8px; }
-  .bar-fill { height:100%; border-radius:6px; background:#58a6ff; }
-  .alert { background:#3b2205; border:1px solid #9e6a03; border-radius:10px; padding:14px; margin-bottom:16px; }
+  .bar { background:#1c2230; border-radius:8px; height:7px; overflow:hidden; margin-top:9px; }
+  .bar-fill { height:100%; border-radius:8px; background:linear-gradient(90deg,#6e7bff,#58a6ff); transition:width 0.3s ease; }
+  .alert { background:linear-gradient(135deg,#3b2a05,#2a1e07); border:1px solid #9e6a03; border-radius:14px; padding:15px; margin-bottom:16px; box-shadow:0 2px 10px rgba(0,0,0,0.18); }
   table { width:100%; border-collapse:collapse; font-size:0.82em; }
-  td { padding:6px 4px; border-bottom:1px solid #21262d; }
-  input[type=number] { width:100%; padding:10px; border-radius:8px; border:1px solid #30363d; background:#0d1117; color:#e6edf3; font-size:1em; margin:8px 0; box-sizing:border-box; }
-  button { width:100%; padding:12px; border-radius:8px; border:none; background:#238636; color:white; font-size:1em; font-weight:600; }
+  td { padding:6px 4px; border-bottom:1px solid #1f2530; }
+  input[type=number] { width:100%; padding:11px; border-radius:9px; border:1px solid #2a3348; background:#0a0e14; color:#e6edf3; font-size:1em; margin:8px 0; box-sizing:border-box; }
+  input[type=number]:focus { outline:none; border-color:#6e7bff; }
+  button { width:100%; padding:13px; border-radius:9px; border:none; background:linear-gradient(135deg,#2ea043,#238636); color:white; font-size:1em; font-weight:700; letter-spacing:0.01em; box-shadow:0 2px 10px rgba(35,134,54,0.3); }
+  button:active { transform:scale(0.99); }
   details { margin-top:16px; }
-  summary { cursor:pointer; color:#8b949e; font-size:0.82em; padding:8px 0; }
+  summary { cursor:pointer; color:#8b949e; font-size:0.82em; padding:8px 0; font-weight:600; }
   summary:hover { color:#e6edf3; }
 </style>
 </head>
 <body>
-  <h1>Picks</h1>
+  <div class="header">
+    <div class="logo">P</div>
+    <div>
+      <h1>Picks</h1>
+      <div class="tagline">Automated moneyline &amp; prop picks, live P&amp;L tracker</div>
+    </div>
+  </div>
 
   <div class="status {{ 'live' if real_trading_on else 'paused' }}">
     <span class="dot"></span>
