@@ -8,14 +8,12 @@ import context_data
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = os.path.join(DATA_DIR, "paper_trades.json")
-BTC_PRICE_HISTORY_FILE = os.path.join(DATA_DIR, "btc_price_history.json")
 PAPER_BANKROLL_FILE = os.path.join(DATA_DIR, "paper_bankroll.json")
 
 # Every paper trade now sizes itself like a real $5 bet, instead of the old
 # "1 contract at entry price" math -- so the logged hypothetical P&L reflects
 # what would actually happen if this pick had been placed for real at the
-# stake size this bot actually uses, and the numbers are comparable across
-# BTC and moneyline.
+# stake size this bot actually uses.
 PAPER_STAKE_DOLLARS = float(os.getenv("PAPER_STAKE_DOLLARS", "5.0"))
 
 # Starting notional bankroll per category, purely for tracking "are we up or
@@ -27,7 +25,6 @@ PAPER_STARTING_BANKROLL = float(os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
 def load_paper_bankroll():
     return safe_read_json(PAPER_BANKROLL_FILE, {
         "moneyline": {"balance": PAPER_STARTING_BANKROLL, "history": []},
-        "btc": {"balance": PAPER_STARTING_BANKROLL, "history": []},
     })
 
 
@@ -56,7 +53,7 @@ def record_paper_bankroll_change(category, pnl, ticker_or_id, note=""):
 
 
 def load_paper_trades():
-    data = safe_read_json(PAPER_TRADES_FILE, {"moneyline": [], "btc": []})
+    data = safe_read_json(PAPER_TRADES_FILE, {"moneyline": []})
     data.setdefault("parlay", [])
     data.setdefault("props", [])
     return data
@@ -281,7 +278,7 @@ def _longest_names_row(rows):
     return max(rows, key=lambda r: len(r.get("away_team") or "") + len(r.get("home_team") or ""))
 
 
-def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None):
+def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_fn, send_discord_fn, webhook, min_edge_pct=2.0, favorite_min_prob=None, real_min_edge_pct=None, real_favorite_min_prob=None):
     """
     Mirrors the REAL trading edge-detection logic exactly (checks both YES
     and NO for a genuine mispricing edge, skips the game entirely if
@@ -289,6 +286,17 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
     to win -- same FAVORITE_MIN_PROB bar real trading uses) -- so paper
     trading actually validates the same method used for real money, just
     extended to more sports and with no cap on how many picks it can make.
+
+    min_edge_pct/favorite_min_prob control which picks get made AT ALL
+    here (usually a wide, data-collection net). real_min_edge_pct/
+    real_favorite_min_prob are optional and separate -- when passed
+    (worker.py passes the actual real-trading bar, MIN_EDGE_PCT and
+    get_favorite_min_prob()), each pick is additionally flagged
+    "manual_bet_candidate": True if it ALSO would have cleared that
+    tighter real-trading bar, so the dashboard can show "this one's just
+    data" vs. "this one's good enough that the bot itself would have bet
+    it for real, if real trading were on for this league." Flag is None
+    (not evaluated) if either real_* threshold isn't passed in.
     """
     from collections import defaultdict as dd
 
@@ -437,6 +445,13 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         except Exception as e:
             print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
 
+        manual_bet_candidate = None
+        if real_min_edge_pct is not None and real_favorite_min_prob is not None:
+            manual_bet_candidate = (
+                _clears_fee_adjusted_edge_local(best_pick["edge_pct"], best_pick["entry_price"], real_min_edge_pct)
+                and best_pick["market_probability"] >= real_favorite_min_prob
+            )
+
         pick = {
             "league": league.upper(),
             "event_id": event_id,
@@ -455,6 +470,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "source": "pregame",
             "contract_price_history": [],
             "event_start_time": start_str,
+            "manual_bet_candidate": manual_bet_candidate,
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
@@ -556,9 +572,8 @@ def track_moneyline_contract_prices(client):
     (pregame AND live -- both are always side="YES", see
     make_moneyline_paper_picks / record_live_moneyline_pick): records the
     Kalshi contract's current yes-side bid, building a real price path for
-    the life of the trade. Mirrors track_btc_contract_prices exactly, but
-    for moneyline. Data collection only -- never closes a position. Never
-    raises.
+    the life of the trade. Data collection only -- never closes a
+    position. Never raises.
     """
     try:
         paper_data = load_paper_trades()
@@ -589,15 +604,14 @@ def track_moneyline_contract_prices(client):
         print(f"[paper_trading] track_moneyline_contract_prices error: {e}")
 
 
-# Mirrors BTC's early-exit feature (see check_and_close_btc_paper_early) at
-# the user's request for feature parity between the two strategies. UNLIKE
-# the BTC threshold, this one is NOT backed by a tracked price-path backtest
-# yet -- there's no historical moneyline contract_price_history to test
-# against (that data only starts being collected once this ships). Treat
-# this as an untested experiment, same as BTC's early exit was on day one:
-# paper-only, tunable/disable-able via env, and its own real performance
-# will show up in contract_price_history + the dashboard once picks resolve
-# this way.
+# Closes a paper pick early once its tracked bid crosses
+# MONEYLINE_PAPER_EARLY_EXIT_PROB, instead of waiting for the game to
+# finish. Not backed by a tracked price-path backtest yet -- there's no
+# historical moneyline contract_price_history to test against (that data
+# only starts being collected once this ships). Treat this as an
+# untested experiment: paper-only, tunable/disable-able via env, and its
+# own real performance will show up in contract_price_history + the
+# dashboard once picks resolve this way.
 MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
 MONEYLINE_PAPER_EARLY_EXIT_PROB = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROB", "0.92"))
 
@@ -607,8 +621,7 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
     Runs on the fast cycle right after track_moneyline_contract_prices. If
     a pending pick's latest tracked bid has reached
     MONEYLINE_PAPER_EARLY_EXIT_PROB, closes it out AT THAT PRICE instead of
-    waiting for the game to finish -- same mechanics as
-    check_and_close_btc_paper_early (both entry and exit taker fees
+    waiting for the game to finish (both entry and exit taker fees
     charged). Paper-only; never touches a real position. Never raises.
     """
     if not MONEYLINE_PAPER_EARLY_EXIT_ENABLED:
@@ -658,391 +671,10 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
         print(f"[paper_trading] check_and_close_moneyline_paper_early error: {e}")
 
 
-# ---------------------------------------------------------------------------
-# BTC 15-min paper trading
-# ---------------------------------------------------------------------------
-def get_btc_spot_price():
-    try:
-        resp = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=5)
-        return float(resp.json()["data"]["amount"])
-    except Exception as e:
-        print(f"[btc] price fetch failed: {e}")
-        return None
-
-
-def load_btc_price_history():
-    return safe_read_json(BTC_PRICE_HISTORY_FILE, [])
-
-
-def save_btc_price_history(history):
-    history = history[-20:]
-    atomic_write_json(BTC_PRICE_HISTORY_FILE, history, indent=None)
-
-
-# Windows this actually tries when "learning" a better momentum lookback.
-# Kept small and simple on purpose -- this is meant to be a real, checkable
-# improvement over a hardcoded number, not a hyperparameter search.
-BTC_MOMENTUM_WINDOW_CANDIDATES = (2, 3, 5)
-BTC_MOMENTUM_WINDOW_DEFAULT = 3
-
-# Confirmed live: over 75 resolved bets the strategy hit a 61.3% win rate
-# and was STILL down $32.84 overall -- winning most of its bets while
-# losing money means the PRICE it pays matters just as much as which
-# direction it guesses, and the original version never checked that at
-# all (it bought whichever side momentum favored at whatever price the
-# market offered). This is the fix: only take a bet when the price
-# leaves real room for profit given how often this strategy is actually
-# right, not just whenever momentum points somewhere.
-BTC_MIN_EDGE_PCT = float(os.getenv("BTC_MIN_EDGE_PCT", "3.0"))
-
-
-def get_effective_btc_momentum_window():
-    """The currently-learned BTC momentum lookback (see
-    maybe_adjust_btc_momentum_window for how/when this changes)."""
-    return load_adaptive_settings().get("btc_momentum_window", BTC_MOMENTUM_WINDOW_DEFAULT)
-
-
-def get_btc_fair_prob_estimate():
-    """
-    Best available stand-in for "how likely is this strategy actually
-    right" -- used to gate BTC trades on price, not just direction. This
-    doesn't have a real calibrated probability model (that would need
-    predicting the SIZE of the move, not just its direction), so it uses
-    the live, resolved win rate of the CURRENTLY active window as the
-    estimate. That's not perfect -- it doesn't split UP vs DOWN, which
-    could have different true odds -- but it's real data, honestly
-    describes what this strategy has actually done, and directly targets
-    the exact failure mode confirmed above.
-
-    Returns None before there's enough resolved history to trust it (the
-    same MIN_SAMPLE_FOR_ADJUSTMENT bar the window-learning itself uses)
-    -- during that bootstrap window BTC still trades on direction alone,
-    same as before this fix, so early data collection isn't blocked by a
-    number that isn't trustworthy yet.
-    """
-    settings = load_adaptive_settings()
-    if settings.get("btc_sample_size", 0) < MIN_SAMPLE_FOR_ADJUSTMENT:
-        return None
-    return settings.get("btc_win_rate")
-
-
-# Paused 2026-09-09 at the user's request -- BTC paper trading has a full,
-# mature sample (256 finished bets) that came back net-negative even after
-# real fixes (early-exit threshold, edge-scaled sizing, momentum-window
-# self-tuning). Rather than keep tuning the same "recent price direction"
-# signal, new BTC picks are paused so effort/attention shifts to
-# moneyline, which still needs real volume to reach a verdict. Existing
-# pending BTC trades still get tracked and resolved normally below (see
-# run_btc_and_resolution in worker.py) -- nothing gets stuck half-open.
-# Flip back on with BTC_PAPER_NEW_PICKS_ENABLED=true if/when a genuinely
-# different BTC signal is worth testing.
-BTC_PAPER_NEW_PICKS_ENABLED = os.getenv("BTC_PAPER_NEW_PICKS_ENABLED", "false").lower() == "true"
-
-
-def make_btc_paper_pick(client, MarketStatus, send_discord_fn, webhook):
-    if not BTC_PAPER_NEW_PICKS_ENABLED:
-        return None
-    price = get_btc_spot_price()
-    if price is None:
-        return None
-
-    history = load_btc_price_history()
-    history.append({"price": price, "at": datetime.now().isoformat()})
-    save_btc_price_history(history)
-
-    window = get_effective_btc_momentum_window()
-    if len(history) < window:
-        return None
-
-    momentum = history[-1]["price"] - history[-window]["price"]
-    direction = "up" if momentum > 0 else "down"
-
-    try:
-        markets = client.get_markets(series_ticker="KXBTC15M", status=MarketStatus.OPEN, limit=5)
-    except Exception as e:
-        print(f"[btc] market fetch failed: {e}")
-        return None
-
-    if not markets:
-        return None
-
-    market = sorted(markets, key=lambda m: getattr(m, "close_time", None) or "9999")[0]
-
-    paper_data = load_paper_trades()
-    already_picked = {p["ticker"] for p in paper_data["btc"]}
-    if market.ticker in already_picked:
-        return None
-
-    entry_price = None
-    yes_ask = getattr(market, "yes_ask_dollars", None)
-    no_ask = getattr(market, "no_ask_dollars", None)
-    if direction == "up" and yes_ask:
-        entry_price = float(yes_ask)
-    elif direction == "down" and no_ask:
-        entry_price = float(no_ask)
-
-    # Price-discipline gate (see get_btc_fair_prob_estimate) -- skip a
-    # pick where the price doesn't leave enough room for profit given
-    # this strategy's real track record, instead of taking every signal
-    # regardless of what it costs.
-    fair_prob_estimate = get_btc_fair_prob_estimate()
-    sized_stake_dollars = PAPER_STAKE_DOLLARS
-    if fair_prob_estimate is not None and entry_price is not None:
-        edge_pct = (fair_prob_estimate - entry_price) * 100
-        if not _clears_fee_adjusted_edge_local(edge_pct, entry_price, BTC_MIN_EDGE_PCT):
-            return None
-        # "Free roam" sizing, at the user's request: instead of every BTC
-        # paper trade risking the same flat $5, size UP for a stronger
-        # edge and DOWN for one that just barely cleared the bar --
-        # bounded to 0.5x-2.5x the base stake so one confident-looking
-        # signal can't dominate the whole paper bankroll on its own
-        # (unbounded sizing is meaningless anyway: see the flat-stake
-        # discussion from 2026-09-09 -- what matters is weighting good
-        # trades more than marginal ones, not just betting bigger overall).
-        size_multiplier = max(0.5, min(2.5, edge_pct / BTC_MIN_EDGE_PCT))
-        sized_stake_dollars = round(PAPER_STAKE_DOLLARS * size_multiplier, 2)
-
-    # Snapshot enough recent prices to retroactively test EVERY candidate
-    # window later (max window is 5, so keep 6: one more than needed, as a
-    # margin) -- this is what makes maybe_adjust_btc_momentum_window able to
-    # actually compare windows against real outcomes instead of just logging
-    # a number nothing reads back.
-    max_window = max(BTC_MOMENTUM_WINDOW_CANDIDATES)
-    price_snapshot = [h["price"] for h in history[-(max_window + 1):]]
-
-    pick = {
-        "ticker": market.ticker,
-        "title": market.title,
-        "close_time": getattr(market, "close_time", None),
-        "predicted_direction": direction,
-        "btc_price_at_pick": price,
-        "momentum_signal": momentum,
-        "momentum_window_used": window,
-        "price_snapshot": price_snapshot,
-        "entry_price": entry_price,
-        "picked_at": datetime.now().isoformat(),
-        "status": "pending",
-        # Contract price over the life of the trade (NOT the BTC spot price
-        # above -- this is the Kalshi contract's own bid, i.e. what this
-        # pick could be sold for right now) -- filled in by
-        # track_btc_contract_prices() on every fast cycle. Recorded so a
-        # real early-exit threshold (cash out at some % gain instead of
-        # holding to full 15-min resolution) can eventually be picked from
-        # actual price paths instead of guessed at.
-        "contract_price_history": [],
-        "sized_stake_dollars": sized_stake_dollars,
-    }
-    paper_data["btc"].append(pick)
-    save_paper_trades(paper_data)
-
-    # Notifying on every paper pick got noisy since it fires far more often
-    # than real trades and never risks money -- default OFF, opt back in
-    # with BTC_PAPER_NOTIFY=true if you want the pings again.
-    if os.getenv("BTC_PAPER_NOTIFY", "false").lower() == "true":
-        price_note = f"${entry_price:.2f}" if entry_price else "price unavailable"
-        msg = (
-            f"[PAPER TRADE - BTC 15min] Predicting: {direction.upper()}\n"
-            f"Market: {market.title}\n"
-            f"BTC price now: ${price:,.2f} (momentum: {momentum:+.2f}, window: {window})\n"
-            f"Entry price: {price_note}\n"
-            f"(No real money -- experimental signal, tracking for accuracy and P&L)"
-        )
-        send_discord_fn(webhook, msg)
-    return pick
-
-
-# Bound how much contract-price history one pending BTC pick keeps -- a
-# 15-minute market checked on a fast cycle won't need many more than this
-# before it resolves, so this can't grow unbounded.
-BTC_CONTRACT_HISTORY_MAX = 30
-
-
-def track_btc_contract_prices(client):
-    """
-    Runs on the fast cycle for every still-PENDING BTC paper pick: records
-    what that contract could be sold for RIGHT NOW (the bid on whichever
-    side this pick actually holds), building up a real price path for
-    each trade's lifetime. Entirely separate from the BTC SPOT price
-    history used for the momentum signal -- this is the Kalshi contract's
-    own price, which is what an early-exit decision would actually act on.
-
-    This is data collection only -- it does NOT close any paper position
-    early. Once enough trades have a real price path recorded, that data
-    can be used to pick an evidence-based early-exit threshold instead of
-    guessing at a percentage. Never raises.
-    """
-    try:
-        paper_data = load_paper_trades()
-        pending = [p for p in paper_data["btc"] if p["status"] == "pending"]
-        if not pending:
-            return
-
-        changed = False
-        now_iso = datetime.now().isoformat()
-        for pick in pending:
-            try:
-                market = client.get_market(pick["ticker"])
-            except Exception:
-                continue
-
-            bid_field = "yes_bid_dollars" if pick["predicted_direction"] == "up" else "no_bid_dollars"
-            bid = getattr(market, bid_field, None)
-            if not bid:
-                continue
-
-            pick.setdefault("contract_price_history", [])
-            pick["contract_price_history"].append({"at": now_iso, "price": float(bid)})
-            pick["contract_price_history"] = pick["contract_price_history"][-BTC_CONTRACT_HISTORY_MAX:]
-            changed = True
-
-        if changed:
-            save_paper_trades(paper_data)
-    except Exception as e:
-        print(f"[paper_trading] track_btc_contract_prices error: {e}")
-
-
-# Re-backtested 2026-09-09 on the full 250-trade resolved history (99 with
-# a recorded contract price path). Findings that justify this threshold:
-#   - Holding EVERY position to full expiry (no early exit at all) has a
-#     48.2% win rate over 224 trades and nets -$139.23 -- barely worse than
-#     a coin flip, and a genuine loser after fees. The momentum signal
-#     alone does not have a durable edge; it's gotten WORSE over time
-#     (first ~125 resolved trades: 60% win / -$5.34; most recent ~125:
-#     47.2% win / -$23.39).
-#   - Early exits are the only reason the account isn't deeply negative:
-#     +$110.51 across 26 trades at the old 80% threshold.
-#   - Re-running the threshold sweep on the 73 trades that a 80% bar did
-#     NOT catch (their own recorded price paths, so this is real data, not
-#     a guess) shows 65% would have lost less than every other tested
-#     threshold (55-95%): -$100.74 vs. -$134.52 at 80%. Still a loss on
-#     that specific hard-to-catch subset -- lowering the bar does not make
-#     the strategy profitable, it just leaks less on the trades the old
-#     bar was missing. Full fix requires the underlying signal to improve,
-#     not just this threshold; that's the next thing to investigate.
-# Paper-only (real BTC trading is off) -- tune or disable via env.
-BTC_PAPER_EARLY_EXIT_ENABLED = os.getenv("BTC_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
-BTC_PAPER_EARLY_EXIT_PROB = float(os.getenv("BTC_PAPER_EARLY_EXIT_PROB", "0.65"))
-
-
-def check_and_close_btc_paper_early(send_discord_fn=None, webhook=None):
-    """
-    Runs on the fast cycle, right after track_btc_contract_prices records
-    each pending BTC pick's latest contract bid. If that bid has reached
-    BTC_PAPER_EARLY_EXIT_PROB, closes the paper position out AT THAT PRICE
-    instead of waiting for full settlement -- exactly what selling the
-    contract for real would do. Both the entry fee and this exit's own
-    taker fee are charged, same as a real round-trip would cost. Paper-only;
-    never touches a real position. Never raises.
-    """
-    if not BTC_PAPER_EARLY_EXIT_ENABLED:
-        return
-    try:
-        paper_data = load_paper_trades()
-        changed = False
-        for pick in paper_data["btc"]:
-            if pick["status"] != "pending":
-                continue
-            history = pick.get("contract_price_history") or []
-            if not history or not pick.get("entry_price"):
-                continue
-            latest = history[-1]["price"]
-            if latest < BTC_PAPER_EARLY_EXIT_PROB:
-                continue
-
-            entry_price = pick["entry_price"]
-            stake = pick.get("sized_stake_dollars", PAPER_STAKE_DOLLARS)
-            contracts = max(1.0, stake / entry_price)
-            entry_fee = _kalshi_taker_fee_dollars_local(entry_price, contracts)
-            exit_fee = _kalshi_taker_fee_dollars_local(latest, contracts)
-            pnl = round(contracts * (latest - entry_price) - entry_fee - exit_fee, 4)
-
-            pick["status"] = "won" if pnl > 0 else "lost"
-            pick["exit_reason"] = "early_profit_target"
-            pick["exit_price"] = latest
-            pick["stake_dollars"] = round(entry_price * contracts, 4)
-            pick["contracts"] = contracts
-            pick["hypothetical_pnl"] = pnl
-            pick["resolved_at"] = datetime.now().isoformat()
-            changed = True
-
-            balance, is_down, down_by = record_paper_bankroll_change(
-                "btc", pnl, pick.get("ticker"),
-                note=f"BTC early-exit at ${latest:.2f} ({pick['predicted_direction']})",
-            )
-            if send_discord_fn and webhook:
-                send_discord_fn(
-                    webhook,
-                    f"[PAPER EARLY EXIT] {pick['ticker']} cashed out at ${latest:.2f} "
-                    f"(entry ${entry_price:.2f}) -- ${pnl:+.2f}. BTC paper bankroll: ${balance:.2f}",
-                )
-
-        if changed:
-            save_paper_trades(paper_data)
-    except Exception as e:
-        print(f"[paper_trading] check_and_close_btc_paper_early error: {e}")
-
-
-def resolve_btc_paper_trades(client, send_discord_fn=None, webhook=None):
-    paper_data = load_paper_trades()
-    changed = False
-
-    for pick in paper_data["btc"]:
-        if pick["status"] != "pending":
-            continue
-        try:
-            market = client.get_market(pick["ticker"])
-        except Exception:
-            continue
-
-        result = getattr(market, "result", None)
-        if result not in ("yes", "no"):
-            continue
-
-        actual_direction = "up" if result == "yes" else "down"
-        won = (actual_direction == pick["predicted_direction"])
-        pick["status"] = "won" if won else "lost"
-        pick["actual_direction"] = actual_direction  # needed to retroactively score other windows
-        pick["resolved_at"] = datetime.now().isoformat()
-
-        if pick.get("entry_price"):
-            stake = pick.get("sized_stake_dollars", PAPER_STAKE_DOLLARS)
-            contracts = max(1.0, stake / pick["entry_price"])
-            pick["stake_dollars"] = round(pick["entry_price"] * contracts, 4)
-            pick["contracts"] = contracts
-            # Kalshi's real taker fee, paid on entry regardless of win/loss --
-            # never subtracted before (2026-09-08), which meant this
-            # "hypothetical P&L" was overstating true profitability on
-            # every single resolved trade. See _kalshi_taker_fee_dollars_local.
-            entry_fee = _kalshi_taker_fee_dollars_local(pick["entry_price"], contracts)
-            pick["hypothetical_pnl"] = round(((1.0 - pick["entry_price"]) * contracts if won else -pick["entry_price"] * contracts) - entry_fee, 4)
-        else:
-            pick["hypothetical_pnl"] = None
-
-        changed = True
-
-        balance, is_down, down_by = (None, None, None)
-        if pick["hypothetical_pnl"] is not None:
-            balance, is_down, down_by = record_paper_bankroll_change(
-                "btc", pick["hypothetical_pnl"], pick.get("ticker"),
-                note=f"BTC {pick['predicted_direction']} {pick['status']}",
-            )
-
-        if send_discord_fn and webhook:
-            pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A"
-            bankroll_str = ""
-            if balance is not None:
-                bankroll_str = f" | paper bankroll: ${balance:.2f}" + (f" (down ${down_by:.2f})" if is_down else "")
-            send_discord_fn(webhook, f"[RESOLVED - BTC] {pick['title']}: {pick['status'].upper()} (hypothetical P&L: {pnl_str}{bankroll_str})")
-
-    if changed:
-        save_paper_trades(paper_data)
-    return changed
-
-
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "btc", "parlay", "props"]:
+    for category in ["moneyline", "parlay", "props"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -1093,110 +725,6 @@ def get_effective_favorite_min_prob():
     return load_adaptive_settings().get("moneyline_favorite_min_prob", MONEYLINE_FAVORITE_MIN_PROB_DEFAULT)
 
 
-def maybe_adjust_btc_momentum_window(send_discord_fn=None, webhook=None):
-    """
-    The REAL version of this function -- previously it only logged a win
-    rate and wrote a "btc_momentum_window" number that nothing ever read
-    back, so BTC always traded on a hardcoded 3-reading window no matter
-    what this said. Now it actually does what its name claims:
-
-    For every resolved BTC pick, its `price_snapshot` (saved at pick time)
-    lets us retroactively ask "what would each candidate window (2, 3, 5)
-    have predicted here?" and check that against the real outcome
-    (`actual_direction`). That gives a genuine win rate per window, over
-    the SAME set of real outcomes -- not a hypothetical.
-
-    Only switches away from the current window if a candidate has both:
-      (a) a real sample of its own (>= MIN_SAMPLE_FOR_ADJUSTMENT scoreable
-          picks), and
-      (b) a win rate significantly better than the current window's, using
-          the same not-just-noise check as the moneyline threshold.
-    Never switches on a tie or a marginal, could-be-noise difference.
-    """
-    paper_data = load_paper_trades()
-    resolved = [
-        t for t in paper_data["btc"]
-        if t["status"] in ("won", "lost") and t.get("price_snapshot") and t.get("actual_direction")
-    ]
-
-    settings = load_adaptive_settings()
-    current_window = settings.get("btc_momentum_window", BTC_MOMENTUM_WINDOW_DEFAULT)
-
-    if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
-        settings["btc_momentum_window"] = current_window
-        settings["btc_sample_size"] = len(resolved)
-        save_adaptive_settings(settings)
-        return None  # not enough scoreable history yet -- do nothing
-
-    def outcomes_for_window(w):
-        """1.0 per pick where this window would have called it right, else 0.0 -- skips picks whose snapshot isn't long enough for this window."""
-        out = []
-        for t in resolved:
-            snap = t["price_snapshot"]
-            if len(snap) <= w:
-                continue
-            momentum = snap[-1] - snap[-1 - w]
-            predicted = "up" if momentum > 0 else "down"
-            out.append(1.0 if predicted == t["actual_direction"] else 0.0)
-        return out
-
-    per_window = {w: outcomes_for_window(w) for w in BTC_MOMENTUM_WINDOW_CANDIDATES}
-    current_outcomes = per_window.get(current_window, outcomes_for_window(current_window))
-
-    settings["btc_sample_size"] = len(resolved)
-    settings["btc_win_rate"] = statistics.mean(current_outcomes) if current_outcomes else None
-    settings["btc_window_win_rates"] = {
-        str(w): (round(statistics.mean(o), 4) if o else None) for w, o in per_window.items()
-    }
-
-    best_window, best_outcomes = current_window, current_outcomes
-    for w, outcomes in per_window.items():
-        if w == current_window or len(outcomes) < MIN_SAMPLE_FOR_ADJUSTMENT:
-            continue
-        if not current_outcomes:
-            continue
-        # "candidate beats current" as a paired difference: candidate_win - current_win
-        # per matched pick where both windows could score it, so this compares
-        # like-for-like rather than two differently-sized samples in isolation.
-        diffs = []
-        for t in resolved:
-            snap = t["price_snapshot"]
-            if len(snap) <= w or len(snap) <= current_window:
-                continue
-            cand_pred = "up" if (snap[-1] - snap[-1 - w]) > 0 else "down"
-            cur_pred = "up" if (snap[-1] - snap[-1 - current_window]) > 0 else "down"
-            cand_hit = 1.0 if cand_pred == t["actual_direction"] else 0.0
-            cur_hit = 1.0 if cur_pred == t["actual_direction"] else 0.0
-            diffs.append(cand_hit - cur_hit)
-
-        if len(diffs) >= MIN_SAMPLE_FOR_ADJUSTMENT and statistics.mean(diffs) > 0:
-            # Reuse the same "beats noise" check, just on the improvement margin
-            # instead of a P&L total -- true only if the candidate's edge over
-            # the current window survives giving it the benefit of the doubt.
-            neg_diffs = [-d for d in diffs]
-            if _mean_is_significantly_negative(neg_diffs, z=2.0):
-                best_window, best_outcomes = w, outcomes
-
-    if best_window != current_window:
-        settings["btc_momentum_window"] = best_window
-        settings["last_adjusted"] = datetime.now().isoformat()
-        save_adaptive_settings(settings)
-        if send_discord_fn and webhook:
-            old_rate = statistics.mean(current_outcomes) * 100 if current_outcomes else 0
-            new_rate = statistics.mean(best_outcomes) * 100 if best_outcomes else 0
-            send_discord_fn(
-                webhook,
-                f"[LEARNING] BTC momentum window {current_window}->{best_window}: "
-                f"{old_rate:.0f}% -> {new_rate:.0f}% win rate over {len(resolved)} resolved picks, "
-                f"a large enough edge to trust. Switching."
-            )
-        return settings
-
-    settings["btc_momentum_window"] = current_window
-    save_adaptive_settings(settings)
-    return settings
-
-
 def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None):
     """
     The "learning" half of moneyline paper trading: once there's a real
@@ -1218,8 +746,7 @@ def maybe_adjust_moneyline_favorite_threshold(send_discord_fn=None, webhook=None
         if t["status"] in ("won", "lost") and t.get("hypothetical_pnl") is not None
     ]
     if len(resolved) < MIN_SAMPLE_FOR_ADJUSTMENT:
-        # Still record progress toward the threshold (mirrors
-        # maybe_adjust_btc_momentum_window) -- previously this returned
+        # Still record progress toward the threshold -- previously this returned
         # without ever writing moneyline_sample_size, so the dashboard's
         # "Data collected" bar showed 0 of 30 the entire time, even once
         # real resolved bets existed. Fixed 2026-09-09.
@@ -1691,11 +1218,11 @@ PROFITABILITY_ALERTS_FILE = os.path.join(DATA_DIR, "profitability_alerts.json")
 
 
 # Categories that could ever become a REAL trade (moneyline picks real
-# sports games, BTC picks real Kalshi crypto markets). Parlay and props
-# can NEVER place a real trade (Kalshi has no parlay or player-prop
-# product) -- they get a one-time informational note instead of a
-# repeating "turn it on" nag, since there's no "on" switch for them.
-PROFITABILITY_REAL_CAPABLE_CATEGORIES = {"moneyline", "btc"}
+# sports games). Parlay and props can NEVER place a real trade (Kalshi
+# has no parlay or player-prop product) -- they get a one-time
+# informational note instead of a repeating "turn it on" nag, since
+# there's no "on" switch for them.
+PROFITABILITY_REAL_CAPABLE_CATEGORIES = {"moneyline"}
 
 # How often to re-remind about a still-profitable, still-not-turned-on
 # category -- daily, not every ~1-2 minute cycle, at the user's request
@@ -1705,12 +1232,12 @@ PROFITABILITY_REALERT_HOURS = 20
 
 def check_profitability_milestones(send_discord_fn=None, webhook=None, real_trading_on_by_category=None):
     """
-    Runs once per cycle. For each category (moneyline/btc/parlay/props),
+    Runs once per cycle. For each category (moneyline/parlay/props),
     checks whether it has crossed BOTH a real sample size
     (MIN_SAMPLE_FOR_ADJUSTMENT resolved picks) and genuine profit
     (total_hypothetical_pnl > 0).
 
-    moneyline/btc (real_trading_on_by_category tells us if real trading
+    moneyline (real_trading_on_by_category tells us if real trading
     is already on for each): keeps re-alerting once a day, at the user's
     explicit request ("keep letting me know till I see it, so I can fund
     the account and turn it on"), until real trading is actually turned

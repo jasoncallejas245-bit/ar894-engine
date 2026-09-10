@@ -7,7 +7,7 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 LEDGER_FILE = os.path.join(DATA_DIR, "ledger.json")
 BOT_PNL_FILE = os.path.join(DATA_DIR, "bot_realized_pnl.json")
 
-# Every trade -- sports or BTC -- stakes a PERCENTAGE of available budget,
+# Every trade stakes a PERCENTAGE of available budget,
 # not a fixed dollar amount, so it automatically scales with account size
 # (e.g. 25% of a $15 available budget = $3.75, 25% of $20 = $5), instead of
 # staying stuck at one number regardless of what's actually available.
@@ -115,7 +115,7 @@ def check_loss_limit_circuit_breaker(send_discord_fn, webhook):
     profit-take). Only ever fires on actual net losses -- being in
     profit, even after giving some of it back, never halts anything.
     Once real losses reach MAX_LOSS_PERCENT of the allocated budget,
-    halts ALL real trading (sports + BTC) immediately -- paper trading
+    halts ALL real trading immediately -- paper trading
     keeps running untouched. Sends exactly one Discord alert when the
     halt first triggers; does not spam on every cycle after that.
     Re-enabling is a manual action (resume_trading / POST

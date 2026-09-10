@@ -54,6 +54,8 @@ PAGE_TEMPLATE = """
   .muted { color:#8b949e; font-size:0.82em; }
   .sub { color:#8b949e; font-size:0.8em; margin-top:2px; line-height:1.4; }
   .badge { font-size:0.71em; padding:3px 9px; border-radius:20px; background:#1c2333; color:#9aa6c7; border:1px solid #2a3348; font-weight:600; }
+  .badge-bet { background:#0d2818; color:#3fb950; border:1px solid #238636; }
+  .badge-data { background:#1c2230; color:#6e7a94; border:1px solid #2a3348; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width:480px) { .grid2 { grid-template-columns:1fr; } }
   .bar { background:#1c2230; border-radius:8px; height:7px; overflow:hidden; margin-top:9px; }
@@ -202,12 +204,12 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>All Recent Picks</h3>
-    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made.</div>
+    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made. <span class="green">🎯 Bet this yourself</span> means it also cleared the tighter bar real trading uses -- the bot would have placed this one for real if real trading were on for this league. No badge = data collection only, don't place it.</div>
     {% if all_recent_picks %}
       {% for p in all_recent_picks[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}</div>
+          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
           <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · entry ${{ "%.2f"|format(p.entry_price or 0) }} · {{ p.status }}</div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -264,12 +266,12 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Pending Picks — Live Countdown</h3>
-    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves.</div>
+    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves. <span class="green">🎯 Bet this yourself</span> = still time to place it and it clears the real-trading bar; no badge = data only.</div>
     {% if pending_picks %}
       {% for p in pending_picks %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span></div>
+          <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% if p.get('manual_bet_candidate') %} <span class="badge badge-bet">🎯 bet this yourself</span>{% else %} <span class="badge badge-data">data only</span>{% endif %}</div>
           <div class="sub">{{ p.opponent }} · entry ${{ "%.2f"|format(p.entry_price) }}</div>
           <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
         </div>
@@ -282,7 +284,7 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Recent Wins</h3>
-    <div class="sub" style="margin-bottom:10px;">Last picks that hit, across both strategies — most recent first.</div>
+    <div class="sub" style="margin-bottom:10px;">Last picks that hit — most recent first.</div>
     {% if recent_wins %}
       {% for p in recent_wins[:10] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
@@ -402,7 +404,6 @@ def dashboard():
     summary = pt.get_paper_trade_summary()
     bankroll = pt.load_paper_bankroll()
     ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
-    btc_bank = bankroll.get("btc", {"balance": pt.PAPER_STARTING_BANKROLL})
     parlay_bank = bankroll.get("parlay", {"balance": pt.PAPER_STARTING_BANKROLL})
     props_bank = bankroll.get("props", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
@@ -412,34 +413,13 @@ def dashboard():
     favorite_default = pt.MONEYLINE_FAVORITE_MIN_PROB_DEFAULT
     favorite_note = f"{favorite_current*100:.0f}%" + (" (raised)" if favorite_current > favorite_default else "")
 
-    btc_window = adaptive.get("btc_momentum_window", pt.BTC_MOMENTUM_WINDOW_DEFAULT)
-
-    btc_fair_prob = pt.get_btc_fair_prob_estimate()
-    btc_edge_note = (
-        f"Only bets when it estimates at least a {pt.BTC_MIN_EDGE_PCT:.0f}% real edge over the price -- "
-        f"added because it was winning most bets but still losing money paying prices that didn't leave "
-        f"enough room for profit."
-        if btc_fair_prob is not None else
-        f"Will start requiring a {pt.BTC_MIN_EDGE_PCT:.0f}% edge once it has {min_sample} finished bets to judge from -- still gathering data for now."
-    )
-
-    btc_all_trades = pt.load_paper_trades().get("btc", [])
-    btc_early_exits = [t for t in btc_all_trades if t.get("exit_reason") == "early_profit_target"]
-    btc_early_exit_note = (
-        f"{len(btc_early_exits)} trade(s) cashed out early instead of holding to expiry "
-        f"(threshold: {pt.BTC_PAPER_EARLY_EXIT_PROB*100:.0f}% implied) -- "
-        f"${sum(t.get('hypothetical_pnl') or 0 for t in btc_early_exits):+.2f} from those so far"
-        if pt.BTC_PAPER_EARLY_EXIT_ENABLED else
-        "Disabled (BTC_PAPER_EARLY_EXIT_ENABLED=false) -- holding every position to full settlement"
-    )
-
     all_moneyline_picks_early = pt.load_paper_trades().get("moneyline", [])
     ml_early_exits = [p for p in all_moneyline_picks_early if p.get("exit_reason") == "early_profit_target"]
     ml_early_exit_note = (
         f"{len(ml_early_exits)} pick(s) cashed out early instead of waiting for the game to finish "
         f"(threshold: {pt.MONEYLINE_PAPER_EARLY_EXIT_PROB*100:.0f}% implied) -- "
         f"${sum(p.get('hypothetical_pnl') or 0 for p in ml_early_exits):+.2f} from those so far. "
-        f"Unlike BTC's, this threshold isn't backed by tracked price data yet -- it's a new experiment."
+        f"This threshold isn't backed by tracked price data yet -- it's a new experiment."
         if pt.MONEYLINE_PAPER_EARLY_EXIT_ENABLED else
         "Disabled (MONEYLINE_PAPER_EARLY_EXIT_ENABLED=false) -- holding every pick until the game finishes"
     )
@@ -474,31 +454,6 @@ def dashboard():
                 },
             ],
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
-        },
-        {
-            "key": "btc", "label": "Bitcoin Price (15-min bets)",
-            "summary": summary["btc"],
-            "bankroll_balance": btc_bank["balance"],
-            "bankroll_down": btc_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
-            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - btc_bank["balance"]),
-            "settings": [
-                {
-                    "label": "How far back it looks",
-                    "value": f"last {btc_window} price checks",
-                    "explanation": "It guesses UP or DOWN based on which way the price has moved over this many recent checks.",
-                },
-                {
-                    "label": "Minimum edge required",
-                    "value": f"{pt.BTC_MIN_EDGE_PCT:.0f}%" + (f" (est. {btc_fair_prob*100:.0f}% accurate)" if btc_fair_prob is not None else ""),
-                    "explanation": btc_edge_note,
-                },
-                {
-                    "label": "Early profit-taking",
-                    "value": f"On, at {pt.BTC_PAPER_EARLY_EXIT_PROB*100:.0f}% implied" if pt.BTC_PAPER_EARLY_EXIT_ENABLED else "Off",
-                    "explanation": btc_early_exit_note,
-                },
-            ],
-            "sample": min(adaptive.get("btc_sample_size", 0), min_sample),
         },
         {
             "key": "parlay", "label": "Parlay Mode (Experimental, Paper-Only Forever)",
@@ -554,12 +509,12 @@ def dashboard():
     # Profitability status -- same bar (real sample + real profit) the
     # Discord check_profitability_milestones alert uses, shown here too
     # so the answer is visible any time without waiting for a Discord
-    # message. moneyline/btc are the only categories that could ever
-    # place a REAL trade (parlay/props never can -- no Kalshi product).
-    _real_capable_status = {"moneyline": bool(worker.REAL_TRADING_LEAGUES), "btc": worker.BTC_REAL_TRADING_ENABLED}
-    _category_labels = {"moneyline": "Sports Moneyline", "btc": "Bitcoin Price", "parlay": "Parlay Mode", "props": "Player Props"}
+    # message. moneyline is the only category that could ever place a
+    # REAL trade (parlay/props never can -- no Kalshi product).
+    _real_capable_status = {"moneyline": bool(worker.REAL_TRADING_LEAGUES)}
+    _category_labels = {"moneyline": "Sports Moneyline", "parlay": "Parlay Mode", "props": "Player Props"}
     profitability_status = []
-    for _cat in ["moneyline", "btc", "parlay", "props"]:
+    for _cat in ["moneyline", "parlay", "props"]:
         _stats = summary.get(_cat, {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None})
         _resolved = _stats.get("resolved", 0)
         _pnl = _stats.get("total_hypothetical_pnl")
@@ -567,7 +522,7 @@ def dashboard():
         profitability_status.append({
             "label": _category_labels[_cat], "resolved": _resolved, "min_sample": min_sample,
             "win_rate": _stats.get("win_rate"), "pnl": _pnl, "is_profitable": _is_profitable,
-            "can_go_real": _cat in ("moneyline", "btc"), "real_on": _real_capable_status.get(_cat, False),
+            "can_go_real": _cat == "moneyline", "real_on": _real_capable_status.get(_cat, False),
         })
 
     recent_wins = []
@@ -578,14 +533,6 @@ def dashboard():
                 "entry_price": p.get("entry_price") or 0, "exit_price": p.get("exit_price"),
                 "exit_reason": p.get("exit_reason"), "resolved_at": p.get("resolved_at", ""),
                 "pnl": p.get("hypothetical_pnl"),
-            })
-    for t in btc_all_trades:
-        if t.get("status") == "won" and t.get("hypothetical_pnl") is not None:
-            recent_wins.append({
-                "name": t.get("predicted_direction", "?").upper(), "category": "BTC",
-                "entry_price": t.get("entry_price") or 0, "exit_price": t.get("exit_price"),
-                "exit_reason": t.get("exit_reason"), "resolved_at": t.get("resolved_at", ""),
-                "pnl": t.get("hypothetical_pnl"),
             })
     recent_wins.sort(key=lambda w: w.get("resolved_at") or "", reverse=True)
 
@@ -619,7 +566,7 @@ def dashboard():
     def _fmt_countdown(iso_str):
         """'starts in 2h 15m' / 'in progress' / 'starting any moment' for a
         future (or just-passed) timestamp -- used for game start times and
-        BTC's 15-min window close_time. Returns None if there's nothing to show."""
+        a game's start time. Returns None if there's nothing to show."""
         if not iso_str:
             return None
         try:
@@ -673,9 +620,9 @@ def dashboard():
     for p in too_close_picks:
         p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
 
-    # Pending Picks -- every still-open moneyline pick plus the current BTC
-    # window, each with when it started/starts and when it resolves, so
-    # there's one place to see "what's live right now and when do I find out."
+    # Pending Picks -- every still-open moneyline pick, with when it
+    # started/starts and when it resolves, so there's one place to see
+    # "what's live right now and when do I find out."
     pending_picks = []
     for p in all_moneyline_picks:
         if p.get("status") != "pending":
@@ -690,16 +637,7 @@ def dashboard():
             "picked_at": _fmt_when(p.get("picked_at")),
             "timing_label": timing_label, "timing_value": timing_value,
             "entry_price": p.get("entry_price") or 0,
-        })
-    for t in btc_all_trades:
-        if t.get("status") != "pending":
-            continue
-        pending_picks.append({
-            "name": t.get("predicted_direction", "?").upper(), "category": "BTC",
-            "opponent": t.get("title") or t.get("ticker"),
-            "picked_at": _fmt_when(t.get("picked_at")),
-            "timing_label": "Window resolves", "timing_value": _fmt_countdown(t.get("close_time")),
-            "entry_price": t.get("entry_price") or 0,
+            "manual_bet_candidate": p.get("manual_bet_candidate"),
         })
 
     activity = {
@@ -709,10 +647,8 @@ def dashboard():
         "error_window_label": "recent scans",
     }
 
-    real_trading_on = bool(worker.REAL_TRADING_LEAGUES) or worker.BTC_REAL_TRADING_ENABLED
+    real_trading_on = bool(worker.REAL_TRADING_LEAGUES)
     real_trading_summary = ", ".join(sorted(worker.REAL_TRADING_LEAGUES)) if worker.REAL_TRADING_LEAGUES else ""
-    if worker.BTC_REAL_TRADING_ENABLED:
-        real_trading_summary = (real_trading_summary + " + BTC").strip(" +")
 
     trading_halted = ledger.is_trading_halted()
     bot_pnl_data = ledger.load_bot_pnl()
@@ -783,7 +719,7 @@ def trade_audit_log_route():
     Shows every real-money trade DECISION the bot has logged -- the fair
     probability it calculated, the price Kalshi was offering, and the edge
     it thought it saw -- so a specific trade can be checked after the fact.
-    Only logged for sports/moneyline trades (BTC doesn't have a "fair prob"
+    Only logged for sports/moneyline trades (parlay/props don't have a "fair prob"
     to compare against). Newest first. Optional ?league=ufc or ?search=berisha
     to filter.
     """
@@ -811,7 +747,7 @@ def moneyline_picks_route():
     reset just because the dashboard's "resolved bets" counters are low.
     Optional ?league=nfl or ?status=pending to filter.
     """
-    data = load_json("paper_trades.json", {"moneyline": [], "btc": []})
+    data = load_json("paper_trades.json", {"moneyline": []})
     picks = data.get("moneyline", [])
     league = request.args.get("league", "").lower()
     status = request.args.get("status", "").lower()
@@ -995,165 +931,6 @@ def purge_pre_threshold_picks_route():
         "kept_count": len(kept),
         "removed_count": len(removed),
         "removed_picks": removed,
-    }
-
-
-@app.route("/shard_balance")
-def shard_balance_route():
-    """
-    Diagnostic for Kalshi's new exchange-sharding rollout (crypto markets
-    moved to a separate exchange shard on 2026-08-24). Programmatic
-    traders must have collateral PRE-ALLOCATED on the shard a market
-    lives on before an order can be placed there -- if the account's
-    cash is sitting on the default shard (0) and BTC/crypto markets now
-    live on shard 2, real BTC orders can fail/reject for balance reasons
-    that have nothing to do with the trading logic itself.
-
-    This calls whatever balance/shard-aware methods the installed
-    pykalshi client actually exposes and reports back what it finds,
-    including a raw introspection of available methods, so this can be
-    diagnosed from real account data instead of guessing at the
-    library's surface. No dashboard button -- hit directly:
-    https://<your-app>.up.railway.app/shard_balance
-    """
-    client = get_client()
-    result = {}
-
-    try:
-        result["default_balance_cents"] = client.portfolio.get_balance().balance
-    except Exception as e:
-        result["default_balance_error"] = str(e)
-
-    portfolio_methods = [m for m in dir(client.portfolio) if not m.startswith("_")]
-    result["portfolio_methods_available"] = portfolio_methods
-
-    # Try every plausible shard-aware call the client might expose, without
-    # assuming which one (if any) this version of pykalshi actually has.
-    per_shard = {}
-    for shard_idx in range(4):
-        for method_name, kwargs in [
-            ("get_balance", {"exchange_index": shard_idx}),
-            ("get_balances", {"exchange_index": shard_idx}),
-        ]:
-            method = getattr(client.portfolio, method_name, None)
-            if method is None:
-                continue
-            try:
-                r = method(**kwargs)
-                per_shard[f"shard_{shard_idx}_via_{method_name}"] = getattr(r, "balance", r)
-            except Exception as e:
-                per_shard[f"shard_{shard_idx}_via_{method_name}_error"] = str(e)
-    result["per_shard_attempts"] = per_shard
-
-    # Some client versions expose a raw request/session escape hatch --
-    # capture what's there so a raw GET /portfolio/balance?exchange_index=
-    # can be attempted if the typed methods don't support shards yet.
-    raw_attrs = [a for a in dir(client) if not a.startswith("__") and a not in ("portfolio",)]
-    result["client_top_level_attrs"] = raw_attrs
-
-    # Per Kalshi's own docs, GET /portfolio/balance (no exchange_index)
-    # already aggregates across every shard AND returns a
-    # "balance_breakdown" array showing the split per exchange_index --
-    # this is the real answer to "is money actually sitting on the
-    # crypto shard", independent of whether pykalshi's typed
-    # get_balance() wrapper happens to expose that field yet.
-    for method_name in ("get", "_request", "paginated_get"):
-        method = getattr(client, method_name, None)
-        if method is None:
-            continue
-        try:
-            raw = method("/portfolio/balance")
-            result[f"raw_balance_via_{method_name}"] = raw
-            break
-        except Exception as e:
-            result[f"raw_balance_via_{method_name}_error"] = str(e)
-
-    return result
-
-
-@app.route("/fund_crypto_shard", methods=["POST"])
-def fund_crypto_shard_route():
-    """
-    TEST/DIAGNOSTIC ONLY for now -- not wired into the trading loop yet.
-    Moves real money from the default exchange shard (0) to the crypto
-    shard (2) via Kalshi's Intra Account Transfer endpoint, so this can
-    be validated with a small real transfer BEFORE any automatic
-    version of this gets built into process_btc_real_trading. POST only
-    (never GET) so a browser preview or crawler can't trigger it by
-    accident. Trigger with:
-    curl -X POST https://<your-app>.up.railway.app/fund_crypto_shard -d amount=1.00
-
-    "amount" is dollars (defaults to 1.00 -- deliberately tiny for the
-    first real test). Kalshi's transfer endpoint takes the amount in
-    CENTICENTS (1/100 of a cent -- i.e. dollars * 10000), per their own
-    API docs, which is a different unit than get_balance()'s cents.
-    """
-    amount_dollars = float(request.form.get("amount", request.args.get("amount", 1.00)))
-    client = get_client()
-    result = {"requested_amount_dollars": amount_dollars}
-
-    try:
-        before = client.get("/portfolio/balance")
-        result["balance_before"] = before.get("balance_breakdown")
-    except Exception as e:
-        result["balance_before_error"] = str(e)
-
-    body = {
-        "source": "event_contract",
-        "destination": "event_contract",
-        "amount": round(amount_dollars * 10000),
-        "source_exchange_shard": 0,
-        "destination_exchange_shard": 2,
-    }
-    result["request_body"] = body
-
-    for method_name, call in [
-        ("post_json", lambda: client.post("/portfolio/intra_exchange_instance_transfer", json=body)),
-        ("post_data", lambda: client.post("/portfolio/intra_exchange_instance_transfer", data=body)),
-        ("post_positional", lambda: client.post("/portfolio/intra_exchange_instance_transfer", body)),
-    ]:
-        try:
-            resp = call()
-            result["transfer_response"] = resp
-            result["transfer_method_used"] = method_name
-            break
-        except Exception as e:
-            result[f"{method_name}_error"] = str(e)
-
-    return result
-
-
-@app.route("/btc_price_paths")
-def btc_price_paths_route():
-    """
-    BTC paper trades with their recorded contract price history (see
-    paper_trading.track_btc_contract_prices) -- resolved trades show the
-    full path from entry to resolution, so a real early-exit percentage
-    can be picked from actual data instead of guessed at. Optional
-    ?status=won / ?status=lost / ?status=pending to filter; defaults to
-    resolved trades that actually have price history recorded (older
-    trades won't -- this started fresh, not retroactively).
-    """
-    import paper_trading as pt
-    data = pt.load_paper_trades()
-    btc = data.get("btc", [])
-    status_filter = request.args.get("status")
-    if status_filter:
-        btc = [p for p in btc if p.get("status") == status_filter]
-    else:
-        btc = [p for p in btc if p.get("status") in ("won", "lost") and p.get("contract_price_history")]
-    return {
-        "count": len(btc),
-        "trades": [
-            {
-                "ticker": p["ticker"], "status": p["status"], "predicted_direction": p["predicted_direction"],
-                "entry_price": p.get("entry_price"), "contract_price_history": p.get("contract_price_history", []),
-                "picked_at": p.get("picked_at"), "resolved_at": p.get("resolved_at"),
-                "hypothetical_pnl": p.get("hypothetical_pnl"), "stake_dollars": p.get("stake_dollars"),
-                "exit_reason": p.get("exit_reason", "held_to_expiry"), "exit_price": p.get("exit_price"),
-            }
-            for p in btc
-        ],
     }
 
 
@@ -1341,7 +1118,7 @@ def health_route():
 @app.route("/resume_trading", methods=["POST"])
 def resume_trading_route():
     """Manually clears the drawdown circuit breaker's halt so real trading
-    (sports + BTC, whichever you've separately enabled) can resume. This
+    (sports, if you've separately turned real trading on) can resume. This
     never happens automatically -- only this call clears it, so a losing
     streak can't quietly turn itself back on."""
     import ledger

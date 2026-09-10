@@ -6,8 +6,7 @@ fair price against Kalshi's price to find a genuine mispricing), this
 watches ONLY Kalshi's own live price movement on games already in
 progress -- no external odds API needed, so it isn't subject to
 SharpAPI's rate limits at all. This is the same "trade off the
-exchange's own price action" idea the BTC strategy already uses,
-applied to sports.
+exchange's own price action" idea applied to sports.
 
 Explicitly designed around a real risk the account owner raised directly:
 in-game sports prices swing constantly and reverse constantly (a team
@@ -216,7 +215,7 @@ def _sustained_direction(history, threshold, required_checks):
 
 def monitor_live_games(client, send_discord_fn, webhook):
     """
-    Called on the fast (BTC-speed) cycle -- polls Kalshi's OWN current
+    Called on the fast cycle -- polls Kalshi's OWN current
     price for every tracked in-progress game, appends to that game's
     price history, and decides AT MOST ONCE per game whether a sustained
     move looks real. Once decided (or once the game is presumed over),
@@ -291,7 +290,7 @@ def monitor_live_games(client, send_discord_fn, webhook):
 
 def check_tie_alerts(client, send_discord_fn, webhook):
     """
-    Called on the fast (BTC-speed) cycle -- for every tracked in-progress
+    Called on the fast cycle -- for every tracked in-progress
     game in a league where a "tied score" makes sense (NFL/NCAAF/MLB/
     WNBA; UFC/ATP have no team score at all), checks ESPN's free public
     scoreboard and sends a Discord alert the FIRST time the score becomes

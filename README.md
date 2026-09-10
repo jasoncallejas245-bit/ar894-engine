@@ -1,6 +1,6 @@
 # Picks Engine
 
-An autonomous trading bot for Kalshi prediction markets — sports moneylines (NFL, NCAAF, MLB, UFC, ATP) and a short-window BTC momentum strategy — with a live Flask dashboard, notional paper-trading simulation, and a gated self-adjustment ("learning") layer.
+An autonomous trading bot for Kalshi prediction markets — sports moneylines (NFL, NCAAF, MLB, UFC, ATP, WNBA, NBA), plus experimental parlay and player-prop paper tickets — with a live Flask dashboard, notional paper-trading simulation, and a gated self-adjustment ("learning") layer.
 
 **Start here:** [`CLAUDE.md`](./CLAUDE.md) has the full picture — architecture, current safety state (real-money trading is currently paused everywhere), how the learning system works, and known gotchas. Read that before making changes.
 

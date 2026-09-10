@@ -25,11 +25,10 @@ os.environ.setdefault("KALSHI_PRIVATE_KEY_PATH", os.environ["KALSHI_PRIVATE_KEY_
 SHARPAPI_KEY = os.environ["SHARPAPI_KEY"]
 DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
 DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
-# Optional, separate channels -- each falls back to DISCORD_WEBHOOK_UPDATES
-# if not set, so nothing breaks until these are actually configured in
-# Railway. Set DISCORD_WEBHOOK_BTC / DISCORD_WEBHOOK_ERRORS env vars to a
-# different channel's webhook URL to split traffic out.
-DISCORD_WEBHOOK_BTC = os.getenv("DISCORD_WEBHOOK_BTC", DISCORD_WEBHOOK_UPDATES)
+# Optional, separate channel -- falls back to DISCORD_WEBHOOK_UPDATES if
+# not set, so nothing breaks until this is actually configured in Railway.
+# Set DISCORD_WEBHOOK_ERRORS to a different channel's webhook URL to split
+# error traffic out.
 DISCORD_WEBHOOK_ERRORS = os.getenv("DISCORD_WEBHOOK_ERRORS", DISCORD_WEBHOOK_UPDATES)
 
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
@@ -62,7 +61,7 @@ def kalshi_taker_fee_dollars(price_dollars, contracts=1.0, multiplier=1.0):
 # Minimum extra edge (in the same "cents per $1-face-value contract" units
 # as edge_pct) required ABOVE the fee before a trade is worth taking --
 # i.e. edge_pct must clear kalshi_taker_fee_dollars(price)*100 by at least
-# this much, not just clear the raw MIN_EDGE_PCT/BTC_MIN_EDGE_PCT bar.
+# this much, not just clear the raw MIN_EDGE_PCT bar.
 # Keeps a real (if modest) expected profit margin after the real cost of
 # trading, instead of a threshold that the fee alone can already consume.
 MIN_NET_EDGE_AFTER_FEE_PCT = float(os.getenv("MIN_NET_EDGE_AFTER_FEE_PCT", "1.0"))
@@ -73,7 +72,7 @@ def clears_fee_adjusted_edge(edge_pct, price_dollars, min_edge_pct):
     True if edge_pct clears BOTH the existing raw threshold AND leaves at
     least MIN_NET_EDGE_AFTER_FEE_PCT of edge remaining after Kalshi's real
     taker fee at this price. Centralizes the fee-adjusted check so every
-    call site (real trading AND paper trading, sports AND BTC) evaluates
+    call site (real trading AND paper trading) evaluates
     "is this actually worth it" the same way.
     """
     if edge_pct < min_edge_pct:
@@ -100,10 +99,10 @@ def get_favorite_min_prob():
     return pt.get_effective_favorite_min_prob()
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 # Sports (SharpAPI) scanning stays on its own slower cadence -- games move
-# on a much longer clock than BTC's 15-minute windows, and SharpAPI calls
-# are the heavier/more rate-limit-sensitive part. BTC checks, position
-# closes/reconciliation, and paper-trade resolution still run every
-# SCAN_INTERVAL_SECONDS regardless of this.
+# on a much longer clock, and SharpAPI calls are the heavier/more
+# rate-limit-sensitive part. Position closes/reconciliation and
+# paper-trade resolution still run every SCAN_INTERVAL_SECONDS regardless
+# of this.
 SPORTS_SCAN_INTERVAL_SECONDS = int(os.getenv("SPORTS_SCAN_INTERVAL_SECONDS", "300"))
 
 SHARPAPI_BASE = "https://api.sharpapi.io/api/v1/odds"
@@ -153,111 +152,6 @@ LEAGUE_SERIES = {
 # learning model's adjustments) have been reviewed and real trading is
 # deliberately turned back on.
 REAL_TRADING_LEAGUES = set()
-
-# BTC real-money trading is paused too, for the same reason -- everything
-# is 100% paper right now while the learning model builds up a track
-# record. Flip back on with BTC_REAL_TRADING_ENABLED=true once ready.
-BTC_REAL_TRADING_ENABLED = os.getenv("BTC_REAL_TRADING_ENABLED", "false").lower() == "true"
-
-# Optional hard cap on a single real BTC stake, in dollars -- unset by
-# default, which preserves the existing "use the full available budget"
-# behavior exactly as before. Set this (e.g. BTC_MAX_STAKE_DOLLARS=1.00)
-# to run a deliberately small, bounded real-money test without touching
-# the approved allowance itself. Safe to leave set permanently too, if
-# a smaller-than-full-budget stake size is ever wanted long-term.
-_btc_max_stake_env = os.getenv("BTC_MAX_STAKE_DOLLARS")
-BTC_MAX_STAKE_DOLLARS = float(_btc_max_stake_env) if _btc_max_stake_env else None
-
-# Kalshi split BTC/crypto markets onto their own "exchange shard" (shard
-# index 2) on 2026-08-24 -- collateral has to be pre-allocated on that
-# specific shard before an order can land there, separate from the
-# account's overall balance. Confirmed live: this account's balance was
-# 100% sitting on the default shard (0) with $0 on the crypto shard,
-# which would silently reject every real BTC order regardless of
-# strategy correctness. BTC_SHARD_INDEX / DEFAULT_SHARD_INDEX name the
-# two sides of that transfer; the actual top-up happens in
-# ensure_crypto_shard_funded() below, called right before any real BTC
-# order is placed.
-BTC_SHARD_INDEX = 2
-DEFAULT_SHARD_INDEX = 0
-# Keep a little extra buffer on the crypto shard beyond exactly what one
-# trade needs, so back-to-back trades don't re-trigger a transfer every
-# single cycle.
-SHARD_TRANSFER_BUFFER_DOLLARS = 2.0
-# Leave at least this much on the default shard -- never sweep it to $0.
-SHARD_MIN_RESERVE_DOLLARS = 1.0
-# Don't attempt more than one shard transfer this often, so a persistent
-# error (or Kalshi-side processing delay) can't turn into a transfer-spam
-# loop -- transfers are also documented as processed asynchronously, so
-# this gives one time to land before trying again.
-SHARD_TRANSFER_COOLDOWN_SECONDS = 300
-SHARD_TRANSFER_STATE_FILE = os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "shard_transfer_state.json")
-
-
-def ensure_crypto_shard_funded(client, needed_dollars):
-    """
-    Confirmed live (real $1 transfer, 2026-09-07) that Kalshi's Intra
-    Account Transfer endpoint works via client.post(path, data=body) --
-    pykalshi's post() doesn't take a `json` kwarg, but plain `data` (form-
-    encoded) is accepted and Kalshi processes it correctly. This checks
-    whether the crypto shard already holds enough for the trade about to
-    be placed, and tops it up from the default shard if not.
-
-    Returns True if the crypto shard already has (or now has) enough to
-    proceed. Returns False if funding isn't possible right now (not
-    enough on the default shard, in cooldown after a recent attempt, or
-    the balance/transfer call itself failed) -- callers should skip
-    placing the order this cycle rather than risk an order rejected for
-    an insufficient-shard-balance reason that has nothing to do with the
-    trading signal itself. Never raises.
-    """
-    try:
-        balance = client.get("/portfolio/balance")
-        breakdown = {row["exchange_index"]: float(row["balance"]) for row in balance.get("balance_breakdown", [])}
-    except Exception as e:
-        print(f"[shard-fund] balance check failed: {e}")
-        return False
-
-    crypto_balance = breakdown.get(BTC_SHARD_INDEX, 0.0)
-    if crypto_balance >= needed_dollars:
-        return True
-
-    state = safe_read_json(SHARD_TRANSFER_STATE_FILE, {})
-    last_attempt = state.get("last_attempt")
-    if last_attempt:
-        try:
-            last_dt = datetime.fromisoformat(last_attempt)
-            if (datetime.now(timezone.utc) - last_dt).total_seconds() < SHARD_TRANSFER_COOLDOWN_SECONDS:
-                return False  # recently tried -- give a pending transfer time to land
-        except Exception:
-            pass
-
-    default_balance = breakdown.get(DEFAULT_SHARD_INDEX, 0.0)
-    available_to_move = default_balance - SHARD_MIN_RESERVE_DOLLARS
-    shortfall = (needed_dollars + SHARD_TRANSFER_BUFFER_DOLLARS) - crypto_balance
-    transfer_amount = min(shortfall, available_to_move)
-
-    atomic_write_json(SHARD_TRANSFER_STATE_FILE, {"last_attempt": datetime.now(timezone.utc).isoformat()})
-
-    if transfer_amount <= 0:
-        print(f"[shard-fund] can't fund crypto shard -- default shard only has ${default_balance:.2f} "
-              f"(need to move ${shortfall:.2f}, min reserve ${SHARD_MIN_RESERVE_DOLLARS:.2f})")
-        return False
-
-    body = {
-        "source": "event_contract",
-        "destination": "event_contract",
-        "amount": round(transfer_amount * 10000),  # Kalshi wants centicents for this endpoint
-        "source_exchange_shard": DEFAULT_SHARD_INDEX,
-        "destination_exchange_shard": BTC_SHARD_INDEX,
-    }
-    try:
-        resp = client.post("/portfolio/intra_exchange_instance_transfer", data=body)
-        print(f"[shard-fund] moved ${transfer_amount:.2f} from shard {DEFAULT_SHARD_INDEX} to "
-              f"shard {BTC_SHARD_INDEX} (transfer_id={resp.get('transfer_id')})")
-    except Exception as e:
-        print(f"[shard-fund] transfer failed: {e}")
-    return False  # transfer is async -- skip this cycle's order either way, try again next cycle
 
 # Sports where Kalshi's short title is an individual's SURNAME, not a full
 # team name -- these need surname matching instead of exact-full-name
@@ -869,7 +763,7 @@ def compute_stake_dollars(available, edge_pct=None):
     more confidence, so it bets more. At the minimum qualifying edge
     (MIN_EDGE_PCT), it stakes the base STAKE_PERCENT of available budget;
     every additional multiple of that edge scales the stake up proportionally,
-    capped at 100% of budget. Pass edge_pct=None for BTC, which is always
+    capped at 100% of budget. Pass edge_pct=None for a strategy that is always
     allowed to use the full available budget (no sports-style edge to scale on).
 
     Either way, the result is capped just under available/FEE_SAFETY_BUFFER so
@@ -1150,77 +1044,6 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 save_seen_trades(seen_trades)
 
 
-def process_btc_real_trading(client):
-    """Real-money BTC trading using the same momentum signal as the paper
-    experiment, gated by live ledger budget (separate smaller stake size
-    than sports, given the higher uncertainty of this method)."""
-    price = pt.get_btc_spot_price()
-    if price is None:
-        return
-    history = pt.load_btc_price_history()
-    window = pt.get_effective_btc_momentum_window()  # same learned window paper trading uses
-    if len(history) < window:
-        return
-    momentum = history[-1]["price"] - history[-window]["price"]
-    direction = "up" if momentum > 0 else "down"
-
-    try:
-        markets = client.get_markets(series_ticker="KXBTC15M", status=MarketStatus.OPEN, limit=5)
-    except Exception as e:
-        print(f"[btc-real] market fetch failed: {e}")
-        return
-    if not markets:
-        return
-    market = sorted(markets, key=lambda m: getattr(m, "close_time", None) or "9999")[0]
-
-    trade_key = f"btc_real:{market.ticker}"
-    seen = load_seen_trades()
-    if trade_key in seen:
-        return
-
-    side = Side.YES if direction == "up" else Side.NO
-    price_field = "yes_ask_dollars" if direction == "up" else "no_ask_dollars"
-    ask = getattr(market, price_field, None)
-    if not ask:
-        return
-    ask_price = float(ask)
-
-    # Same price-discipline gate paper trading uses (see
-    # paper_trading.get_btc_fair_prob_estimate) -- confirmed live this
-    # strategy can win most of its bets and still lose money if it pays
-    # whatever price is offered, so real trading needs this check too,
-    # not just the paper simulation.
-    fair_prob_estimate = pt.get_btc_fair_prob_estimate()
-    if fair_prob_estimate is not None:
-        edge_pct = (fair_prob_estimate - ask_price) * 100
-        if not clears_fee_adjusted_edge(edge_pct, ask_price, pt.BTC_MIN_EDGE_PCT):
-            return
-
-    available = ledger.get_available_budget(client, load_open_positions())
-    stake_dollars = compute_stake_dollars(available)  # BTC may use the full available budget
-    if BTC_MAX_STAKE_DOLLARS is not None:
-        stake_dollars = min(stake_dollars, BTC_MAX_STAKE_DOLLARS)
-    count_fp = max(1.0, stake_dollars / ask_price)
-
-    # SHARD FUNDING HOOK -- delete this block to remove the feature (see
-    # ensure_crypto_shard_funded above). BTC markets live on their own
-    # Kalshi exchange shard as of 2026-08-24, and money has to be
-    # pre-allocated there before an order can land -- this tops the
-    # crypto shard up from the default shard whenever it's running low,
-    # so real BTC trades don't silently reject for a funding/routing
-    # reason that has nothing to do with the trading signal. If a top-up
-    # was just initiated (transfers are async), this skips placing the
-    # order THIS cycle and tries again once the transfer's had time to land.
-    if not ensure_crypto_shard_funded(client, stake_dollars):
-        return
-
-    msg = f"[BTC] {direction.upper()} momentum signal\nMarket: {market.title}\nPrice: ${ask_price:.2f}"
-    if execute_kalshi_buy(client, market.ticker, ask_price, count_fp, msg, side=side, league="btc", matchup=market.title,
-                           seen_trades=seen, trade_key=trade_key):
-        seen.add(trade_key)
-        save_seen_trades(seen)
-
-
 def check_daily_summary():
     today = date.today().isoformat()
     last = safe_read_json(LAST_SUMMARY_FILE, {})
@@ -1284,7 +1107,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
     reconcile_settled_positions(client)
 
     if not run_sports_scan:
-        run_btc_and_resolution(client)
+        run_fast_cycle(client)
         _record_cycle_status("finished")
         return
 
@@ -1334,6 +1157,10 @@ def run_once(client, seen_trades, run_sports_scan=True):
             new_picks = pt.make_moneyline_paper_picks(
                 league, rows, kalshi_events, safe_match_event, send_discord, DISCORD_WEBHOOK_BETS,
                 min_edge_pct=paper_min_edge_pct, favorite_min_prob=paper_favorite_min_prob,
+                # So each pick also gets flagged "manual_bet_candidate" -- whether
+                # it ALSO clears the tighter bar real trading uses, i.e. whether
+                # this is a pick worth placing yourself, not just data collection.
+                real_min_edge_pct=MIN_EDGE_PCT, real_favorite_min_prob=get_favorite_min_prob(),
             )
             if new_picks:
                 cycle_new_picks.extend(new_picks)
@@ -1353,46 +1180,36 @@ def run_once(client, seen_trades, run_sports_scan=True):
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"parlay builder error: {e}")
 
-    run_btc_and_resolution(client)
+    run_fast_cycle(client)
     _record_cycle_status("finished")
 
 
-def run_btc_and_resolution(client):
+def run_fast_cycle(client):
     """Everything that should run on the FAST cadence (SCAN_INTERVAL_SECONDS)
-    regardless of whether this cycle also did a full sports scan: BTC's own
-    15-minute windows move much faster than sports games do, so this stays
-    decoupled from SPORTS_SCAN_INTERVAL_SECONDS."""
+    regardless of whether this cycle also did a full sports scan -- live-game
+    tracking and paper-trade resolution, both of which move faster than
+    sports games' own SPORTS_SCAN_INTERVAL_SECONDS. (BTC used to run here
+    too; removed 2026-09-10 at the user's request -- too volatile to be
+    worth learning from.)"""
     try:
-        print("[btc] checking momentum...")
-        if BTC_REAL_TRADING_ENABLED and not ledger.is_trading_halted():
-            process_btc_real_trading(client)
-        pt.make_btc_paper_pick(client, MarketStatus, send_discord, None)  # BTC Discord notifications turned off 2026-09-10 at the user's request -- paper tracking itself is unaffected
-        pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
-        pt.check_and_close_btc_paper_early(send_discord, None)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
         live_trading.monitor_live_games(client, send_discord, None)  # LIVE TRADING HOOK -- delete this line to remove the feature; Discord notice turned off 2026-09-10 at user's request (keeping only bet-slip + tie notifications)
         live_trading.check_tie_alerts(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # TIE ALERT HOOK -- delete this line to remove the feature
-        pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- mirrors BTC's, feeds the early-exit check below
-        pt.check_and_close_moneyline_paper_early(send_discord, None)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's; Discord notice off 2026-09-10
-        pt.resolve_btc_paper_trades(client, send_discord, None)
+        pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- feeds the early-exit check below
+        pt.check_and_close_moneyline_paper_early(send_discord, None)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take; Discord notice off 2026-09-10
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.check_profitability_milestones(
             send_discord, DISCORD_WEBHOOK_UPDATES,
-            real_trading_on_by_category={"moneyline": bool(REAL_TRADING_LEAGUES), "btc": BTC_REAL_TRADING_ENABLED},
+            real_trading_on_by_category={"moneyline": bool(REAL_TRADING_LEAGUES)},
         )  # tells the user once a strategy crosses real sample + real profit, keeps reminding daily until turned on
     except Exception as e:
-        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
+        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"fast-cycle error: {e}")
 
     try:
         ledger.check_for_new_deposit(client, send_discord, None, "https://ar894-engine-production.up.railway.app")  # Discord notice off 2026-09-10 at user's request
     except Exception as e:
         print(f"[ledger] deposit check error: {e}")
-
-    try:
-        pt.maybe_adjust_btc_momentum_window(send_discord, None)
-    except Exception as e:
-        print(f"[adjust] error: {e}")
 
     try:
         pt.maybe_adjust_moneyline_favorite_threshold(send_discord, None)  # Discord notice off 2026-09-10 at user's request
@@ -1414,8 +1231,8 @@ def start_dashboard_thread():
 
 
 def main():
-    real_status = "NONE (paused, 100% paper)" if not REAL_TRADING_LEAGUES and not BTC_REAL_TRADING_ENABLED else f"{sorted(REAL_TRADING_LEAGUES)}{' + BTC' if BTC_REAL_TRADING_ENABLED else ''}"
-    print(f"--- Picks Autonomous Worker (real trading: {real_status} | paper: all leagues + BTC momentum, learning-gated) ---")
+    real_status = "NONE (paused, 100% paper)" if not REAL_TRADING_LEAGUES else f"{sorted(REAL_TRADING_LEAGUES)}"
+    print(f"--- Picks Autonomous Worker (real trading: {real_status} | paper: all leagues, learning-gated) ---")
     start_dashboard_thread()
     seen_trades = load_seen_trades()
     client = KalshiClient()
