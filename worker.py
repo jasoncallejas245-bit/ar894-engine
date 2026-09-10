@@ -1315,14 +1315,14 @@ def run_btc_and_resolution(client):
         print("[btc] checking momentum...")
         if BTC_REAL_TRADING_ENABLED and not ledger.is_trading_halted():
             process_btc_real_trading(client)
-        pt.make_btc_paper_pick(client, MarketStatus, send_discord, DISCORD_WEBHOOK_BTC)
+        pt.make_btc_paper_pick(client, MarketStatus, send_discord, None)  # BTC Discord notifications turned off 2026-09-10 at the user's request -- paper tracking itself is unaffected
         pt.track_btc_contract_prices(client)  # BTC PRICE HISTORY HOOK -- delete this line to stop collecting early-exit data
-        pt.check_and_close_btc_paper_early(send_discord, DISCORD_WEBHOOK_BTC)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
+        pt.check_and_close_btc_paper_early(send_discord, None)  # BTC EARLY-EXIT HOOK -- paper-only profit-take, see paper_trading.py docstring
         live_trading.monitor_live_games(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # LIVE TRADING HOOK -- delete this line to remove the feature
         live_trading.check_tie_alerts(send_discord, DISCORD_WEBHOOK_BETS)  # TIE ALERT HOOK -- delete this line to remove the feature
         pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- mirrors BTC's, feeds the early-exit check below
         pt.check_and_close_moneyline_paper_early(send_discord, DISCORD_WEBHOOK_UPDATES)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take, mirrors BTC's
-        pt.resolve_btc_paper_trades(client, send_discord, DISCORD_WEBHOOK_BTC)
+        pt.resolve_btc_paper_trades(client, send_discord, None)
         pt.resolve_moneyline_paper_trades(client, send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_parlay_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
         pt.resolve_prop_paper_trades(send_discord, DISCORD_WEBHOOK_UPDATES)
@@ -1335,7 +1335,7 @@ def run_btc_and_resolution(client):
         print(f"[ledger] deposit check error: {e}")
 
     try:
-        pt.maybe_adjust_btc_momentum_window(send_discord, DISCORD_WEBHOOK_BTC)
+        pt.maybe_adjust_btc_momentum_window(send_discord, None)
     except Exception as e:
         print(f"[adjust] error: {e}")
 
