@@ -98,6 +98,32 @@ PAGE_TEMPLATE = """
   </div>
   {% endif %}
 
+  <div class="card">
+    <h3>Profitability Status -- All Strategies</h3>
+    <div class="sub" style="margin-bottom:10px;">Crosses BOTH a real sample size ({{ min_sample }}+ resolved picks) and genuine profit before counting as "profitable" here -- same bar the Discord alerts use.</div>
+    {% for p in profitability_status %}
+    <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
+      <div>
+        <div><strong>{{ p.label }}</strong></div>
+        <div class="sub">{{ p.resolved }} of {{ p.min_sample }} resolved{% if p.win_rate is not none %} · {{ "%.0f"|format(p.win_rate) }}% correct{% endif %}{% if p.pnl is not none %} · ${{ "%.2f"|format(p.pnl) }} hypothetical{% endif %}</div>
+      </div>
+      <div style="text-align:right; white-space:nowrap;">
+        {% if p.is_profitable and p.can_go_real and p.real_on %}
+          <span class="green">✓ Profitable — real trading ON</span>
+        {% elif p.is_profitable and p.can_go_real %}
+          <span class="green">✓ PROFITABLE — fund &amp; turn on real trading</span>
+        {% elif p.is_profitable %}
+          <span class="green">✓ Profitable (paper-only forever)</span>
+        {% elif p.resolved < p.min_sample %}
+          <span class="muted">Gathering data</span>
+        {% else %}
+          <span class="red">Not profitable yet</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
   <div class="grid2">
     {% for c in categories %}
     <div class="card">
@@ -172,6 +198,48 @@ PAGE_TEMPLATE = """
       {% endfor %}
     {% else %}
       <div class="muted">No picks yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>All Parlay Tickets</h3>
+    <div class="sub" style="margin-bottom:10px;">Every paper parlay ticket, win or lose. Paper-only forever -- Kalshi has no real parlay product.</div>
+    {% if all_parlay_tickets %}
+      {% for t in all_parlay_tickets[:15] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span></div>
+          <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}){% if not loop.last %}, {% endif %}{% endfor %}</div>
+          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+        </div>
+        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No parlay tickets yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>All Player Prop Tickets</h3>
+    <div class="sub" style="margin-bottom:10px;">Every PrizePicks-style paper ticket. Uses sportsbook consensus lines, not PrizePicks' own numbers -- see the Player Props card above for why.</div>
+    {% if all_prop_tickets %}
+      {% for t in all_prop_tickets[:15] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span></div>
+          <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+        </div>
+        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% elif t.status == 'needs_manual_check' %}check manually{% else %}pending{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No player prop tickets yet.</div>
     {% endif %}
   </div>
 
@@ -461,6 +529,28 @@ def dashboard():
     too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
     all_recent_picks = list(reversed(sorted(all_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
+    all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
+    all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
+
+    # Profitability status -- same bar (real sample + real profit) the
+    # Discord check_profitability_milestones alert uses, shown here too
+    # so the answer is visible any time without waiting for a Discord
+    # message. moneyline/btc are the only categories that could ever
+    # place a REAL trade (parlay/props never can -- no Kalshi product).
+    _real_capable_status = {"moneyline": bool(worker.REAL_TRADING_LEAGUES), "btc": worker.BTC_REAL_TRADING_ENABLED}
+    _category_labels = {"moneyline": "Sports Moneyline", "btc": "Bitcoin Price", "parlay": "Parlay Mode", "props": "Player Props"}
+    profitability_status = []
+    for _cat in ["moneyline", "btc", "parlay", "props"]:
+        _stats = summary.get(_cat, {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None})
+        _resolved = _stats.get("resolved", 0)
+        _pnl = _stats.get("total_hypothetical_pnl")
+        _is_profitable = _resolved >= min_sample and _pnl is not None and _pnl > 0
+        profitability_status.append({
+            "label": _category_labels[_cat], "resolved": _resolved, "min_sample": min_sample,
+            "win_rate": _stats.get("win_rate"), "pnl": _pnl, "is_profitable": _is_profitable,
+            "can_go_real": _cat in ("moneyline", "btc"), "real_on": _real_capable_status.get(_cat, False),
+        })
+
     recent_wins = []
     for p in all_moneyline_picks:
         if p.get("status") == "won" and p.get("hypothetical_pnl") is not None:
@@ -628,6 +718,9 @@ def dashboard():
         recent_wins=recent_wins,
         pending_picks=pending_picks,
         all_recent_picks=all_recent_picks,
+        all_parlay_tickets=all_parlay_tickets,
+        all_prop_tickets=all_prop_tickets,
+        profitability_status=profitability_status,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
         trading_halted=trading_halted,

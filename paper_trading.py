@@ -1690,37 +1690,92 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
 PROFITABILITY_ALERTS_FILE = os.path.join(DATA_DIR, "profitability_alerts.json")
 
 
-def check_profitability_milestones(send_discord_fn=None, webhook=None):
+# Categories that could ever become a REAL trade (moneyline picks real
+# sports games, BTC picks real Kalshi crypto markets). Parlay and props
+# can NEVER place a real trade (Kalshi has no parlay or player-prop
+# product) -- they get a one-time informational note instead of a
+# repeating "turn it on" nag, since there's no "on" switch for them.
+PROFITABILITY_REAL_CAPABLE_CATEGORIES = {"moneyline", "btc"}
+
+# How often to re-remind about a still-profitable, still-not-turned-on
+# category -- daily, not every ~1-2 minute cycle, at the user's request
+# to "keep letting me know till I see it" without being pure noise.
+PROFITABILITY_REALERT_HOURS = 20
+
+
+def check_profitability_milestones(send_discord_fn=None, webhook=None, real_trading_on_by_category=None):
     """
     Runs once per cycle. For each category (moneyline/btc/parlay/props),
     checks whether it has crossed BOTH a real sample size
     (MIN_SAMPLE_FOR_ADJUSTMENT resolved picks) and genuine profit
-    (total_hypothetical_pnl > 0) for the first time -- alerts once per
-    category, never repeats, so this doesn't nag every cycle after the
-    first crossing. Never raises.
+    (total_hypothetical_pnl > 0).
+
+    moneyline/btc (real_trading_on_by_category tells us if real trading
+    is already on for each): keeps re-alerting once a day, at the user's
+    explicit request ("keep letting me know till I see it, so I can fund
+    the account and turn it on"), until real trading is actually turned
+    on for that one -- then it stops, since the point's been made.
+
+    parlay/props: can never place a real trade at all (no real product
+    exists on Kalshi for either), so this sends ONE informational note
+    instead of a repeating "turn it on" reminder that would never
+    resolve.
+
+    Never raises.
     """
     try:
-        already_alerted = safe_read_json(PROFITABILITY_ALERTS_FILE, {})
+        real_trading_on_by_category = real_trading_on_by_category or {}
+        state = safe_read_json(PROFITABILITY_ALERTS_FILE, {})
         summary = get_paper_trade_summary()
         changed = False
+        now = datetime.now()
+
         for category, stats in summary.items():
-            if already_alerted.get(category):
-                continue
             resolved = stats.get("resolved", 0)
             pnl = stats.get("total_hypothetical_pnl")
-            if resolved >= MIN_SAMPLE_FOR_ADJUSTMENT and pnl is not None and pnl > 0:
-                already_alerted[category] = {"at": datetime.now().isoformat(), "resolved": resolved, "pnl": pnl}
+            if resolved < MIN_SAMPLE_FOR_ADJUSTMENT or pnl is None or pnl <= 0:
+                continue
+
+            win_rate = stats.get("win_rate") or 0.0
+            entry = state.setdefault(category, {})
+
+            if category in PROFITABILITY_REAL_CAPABLE_CATEGORIES:
+                if real_trading_on_by_category.get(category):
+                    continue  # already funded/turned on -- point made, stop nagging
+                last_at = entry.get("last_alert_at")
+                if last_at:
+                    try:
+                        hours_since = (now - datetime.fromisoformat(last_at)).total_seconds() / 3600
+                        if hours_since < PROFITABILITY_REALERT_HOURS:
+                            continue
+                    except Exception:
+                        pass
+                entry["last_alert_at"] = now.isoformat()
+                entry["resolved"], entry["pnl"] = resolved, pnl
                 changed = True
                 if send_discord_fn and webhook:
-                    win_rate = stats.get("win_rate") or 0.0
                     send_discord_fn(
                         webhook,
-                        f"[PROFITABLE] {category.upper()} just crossed {resolved} resolved picks showing REAL "
-                        f"hypothetical profit: ${pnl:+.2f} ({win_rate:.1f}% correct). Worth reviewing for turning "
-                        f"on real-money trading -- I won't flip that on by myself, just flagging that the data "
-                        f"now supports the conversation."
+                        f"[STILL PROFITABLE] {category.upper()}: {resolved} resolved picks, ${pnl:+.2f} real "
+                        f"hypothetical profit ({win_rate:.1f}% correct), and real trading is STILL OFF for this. "
+                        f"Reminding you daily until you fund the account and turn it on, like you asked -- "
+                        f"I won't flip it on myself."
                     )
+            else:
+                if entry.get("informed"):
+                    continue
+                entry["informed"] = True
+                entry["resolved"], entry["pnl"] = resolved, pnl
+                changed = True
+                if send_discord_fn and webhook:
+                    send_discord_fn(
+                        webhook,
+                        f"[PROFITABLE, PAPER-ONLY FOREVER] {category.upper()}: {resolved} resolved picks, ${pnl:+.2f} "
+                        f"hypothetical profit ({win_rate:.1f}% correct) -- good data, but this one can never place a "
+                        f"real trade (Kalshi has no product for it), so there's no 'turn it on' step here, just FYI."
+                    )
+
         if changed:
-            atomic_write_json(PROFITABILITY_ALERTS_FILE, already_alerted)
+            atomic_write_json(PROFITABILITY_ALERTS_FILE, state)
     except Exception as e:
         print(f"[paper_trading] check_profitability_milestones error: {e}")

@@ -1326,7 +1326,10 @@ def run_btc_and_resolution(client):
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
-        pt.check_profitability_milestones(send_discord, DISCORD_WEBHOOK_UPDATES)  # tells the user once a strategy crosses real sample + real profit
+        pt.check_profitability_milestones(
+            send_discord, DISCORD_WEBHOOK_UPDATES,
+            real_trading_on_by_category={"moneyline": bool(REAL_TRADING_LEAGUES), "btc": BTC_REAL_TRADING_ENABLED},
+        )  # tells the user once a strategy crosses real sample + real profit, keeps reminding daily until turned on
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"BTC trading error: {e}")
 
