@@ -56,6 +56,7 @@ def load_paper_trades():
     data = safe_read_json(PAPER_TRADES_FILE, {"moneyline": []})
     data.setdefault("parlay", [])
     data.setdefault("props", [])
+    data.setdefault("passing_yards", [])
     return data
 
 
@@ -674,7 +675,7 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "parlay", "props"]:
+    for category in ["moneyline", "parlay", "props", "passing_yards"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -1198,6 +1199,176 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
             save_paper_trades(paper_data)
     except Exception as e:
         print(f"[paper_trading] resolve_prop_paper_trades error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# NFL/NCAAF passing yards -- individual picks (NEW 2026-09-10, at the
+# user's explicit request: passing yards should be a MAIN FOCUS, with
+# high volume so a real track record builds fast, picked smartly (real
+# sportsbook-consensus edge, not randomly). Unlike the 4-leg all-or-
+# nothing PrizePicks-style ticket above -- which needs 4 qualifying legs
+# across ANY stat/player simultaneously, and so barely ever fires --
+# every qualifying passing-yards leg here is its OWN independent pick.
+# It resolves on its own, same as a moneyline pick, so volume isn't
+# bottlenecked by needing three unrelated players to also qualify the
+# same cycle.
+# ---------------------------------------------------------------------------
+PASSING_YARDS_LEAGUES = {"nfl", "ncaaf"}
+# Deliberately looser than PROP_MIN_CONSENSUS_PROB (0.55) -- the user
+# wants volume here specifically, so this only filters out picks with
+# no real lean at all, not picks that are merely less than 55% sure.
+# Still real sportsbook-consensus edge, never a coinflip guess.
+PASSING_YARDS_MIN_PROB = float(os.getenv("PASSING_YARDS_MIN_PROB", "0.52"))
+
+
+def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webhook=None):
+    """
+    Runs once per cycle for nfl/ncaaf, fed that league's raw SharpAPI
+    player-prop rows. For every quarterback's passing-yards line where
+    one side (over/under) clears PASSING_YARDS_MIN_PROB on sportsbook
+    consensus, makes ONE independent paper pick for that side -- no
+    all-or-nothing bundling, so this can generate many picks per cycle,
+    each graded on its own against the real box score. Skips a
+    (player, line, event) that already has a pending pick, so it doesn't
+    re-pick the same leg every cycle until the game finishes. Never
+    raises.
+    """
+    if league not in PASSING_YARDS_LEAGUES:
+        return []
+    try:
+        parsed = [
+            p for p in (_parse_player_prop_row(r) for r in prop_rows)
+            if p and p["stat_type"] == "passing_yards"
+        ]
+        if not parsed:
+            return []
+
+        groups = {}
+        for p in parsed:
+            key = (p["player"], p["line"], p["side"])
+            groups.setdefault(key, []).append(p)
+
+        paper_data = load_paper_trades()
+        already_picked = {
+            (p["player"], p["line"], p.get("event_id"))
+            for p in paper_data["passing_yards"] if p["status"] == "pending"
+        }
+
+        # Pick the stronger side per (player, line) -- never both over
+        # and under on the same line, since they're complementary bets.
+        by_player_line = {}
+        for (player, line, side), rows in groups.items():
+            probs = [r["prob"] for r in rows if r["prob"] is not None]
+            if not probs:
+                continue
+            avg_prob = sum(probs) / len(probs)
+            pl_key = (player, line)
+            existing = by_player_line.get(pl_key)
+            if existing is None or avg_prob > existing["consensus_prob"]:
+                sample = rows[0]
+                by_player_line[pl_key] = {
+                    "player": player, "line": line, "side": side,
+                    "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
+                    "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
+                    "home_team": sample.get("home_team"),
+                }
+
+        new_picks = []
+        for (player, line), cand in by_player_line.items():
+            if cand["consensus_prob"] < PASSING_YARDS_MIN_PROB:
+                continue
+            event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
+                league, cand.get("away_team"), cand.get("home_team")
+            )
+            dedup_key = (player, line, event_id)
+            if dedup_key in already_picked:
+                continue
+
+            pick = {
+                "player": player,
+                "league": league.upper(),
+                "stat_type": "passing_yards",
+                "line": line,
+                "side": cand["side"],
+                "consensus_prob": cand["consensus_prob"],
+                "book_count": cand["book_count"],
+                "event_id": event_id,
+                "away_team": cand.get("away_team"),
+                "home_team": cand.get("home_team"),
+                "entry_price": cand["consensus_prob"],
+                "picked_at": datetime.now().isoformat(),
+                "status": "pending",
+            }
+            paper_data["passing_yards"].append(pick)
+            new_picks.append(pick)
+            already_picked.add(dedup_key)
+
+        if new_picks:
+            save_paper_trades(paper_data)
+            if send_discord_fn and webhook:
+                lines = [f"[PAPER PASSING YARDS - {league.upper()}] {len(new_picks)} pick(s) this cycle:"]
+                for p in new_picks:
+                    lines.append(f"- {p['player']} {p['side'].upper()} {p['line']} passing yds ({p['consensus_prob']*100:.0f}%)")
+                send_discord_fn(webhook, "\n".join(lines))
+
+        return new_picks
+    except Exception as e:
+        print(f"[paper_trading] maybe_make_passing_yards_picks error: {e}")
+        return []
+
+
+def resolve_passing_yards_picks(send_discord_fn=None, webhook=None):
+    """
+    Checks each pending passing-yards pick against the real final ESPN
+    box score and computes what a real $5 bet would have made, same
+    staking/fee math resolve_moneyline_paper_trades uses. Never guesses
+    -- a game that isn't final yet, or a player ESPN's box score doesn't
+    have a passing-yards number for, is left pending rather than marked
+    either way.
+    """
+    paper_data = load_paper_trades()
+    changed = False
+    for pick in paper_data.get("passing_yards", []):
+        if pick["status"] != "pending" or not pick.get("event_id"):
+            continue
+        try:
+            value, found = context_data.get_player_boxscore_stat(
+                pick["league"].lower(), pick["event_id"], pick["player"], "passing_yards"
+            )
+        except Exception as e:
+            print(f"[paper_trading] passing-yards grading error for {pick['player']}: {e}")
+            continue
+        if not found:
+            continue
+
+        won = (value > pick["line"]) if pick["side"] == "over" else (value < pick["line"])
+        pick["status"] = "won" if won else "lost"
+        pick["resolved_at"] = datetime.now().isoformat()
+        pick["final_value"] = value
+
+        price = pick["entry_price"]
+        contracts = max(1.0, PAPER_STAKE_DOLLARS / price)
+        pick["stake_dollars"] = round(price * contracts, 4)
+        entry_fee = _kalshi_taker_fee_dollars_local(price, contracts)
+        pick["hypothetical_pnl"] = round(((1.0 - price) * contracts if won else -price * contracts) - entry_fee, 4)
+        changed = True
+
+        balance, is_down, down_by = record_paper_bankroll_change(
+            "passing_yards", pick["hypothetical_pnl"], f"{pick['player']}-{pick['line']}",
+            note=f"{pick['league']} {pick['player']} {pick['side']} {pick['line']} {pick['status']}",
+        )
+
+        if send_discord_fn and webhook:
+            pnl_str = f"${pick['hypothetical_pnl']:+.2f}"
+            bankroll_str = f" | paper bankroll: ${balance:.2f}" + (f" (down ${down_by:.2f})" if is_down else "")
+            send_discord_fn(
+                webhook,
+                f"[RESOLVED - PASSING YDS] {pick['player']} {pick['side'].upper()} {pick['line']}: "
+                f"{pick['status'].upper()} (actual {value:.0f} yds, hypothetical P&L: {pnl_str}{bankroll_str})"
+            )
+
+    if changed:
+        save_paper_trades(paper_data)
 
 
 # ---------------------------------------------------------------------------

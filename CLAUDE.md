@@ -6,6 +6,7 @@ This file is for any AI assistant (or future you) picking up this project cold. 
 
 A Python trading bot deployed on Railway that trades Kalshi prediction markets. One strategy:
 - **Sports moneylines**: NFL, NCAAF, MLB, UFC, ATP, WNBA, NBA — picks favorites using no-vig fair-probability edges from sportsbook odds, plus experimental parlay and player-prop paper tickets.
+- **Passing yards (NFL/NCAAF)** — a MAIN FOCUS pick type (2026-09-10, at the user's explicit request): individual, independently-graded picks (not bundled into an all-or-nothing ticket), deliberately looser probability bar (`PASSING_YARDS_MIN_PROB`, default 0.52) than the general player-prop tickets, so volume builds a track record fast. See `paper_trading.maybe_make_passing_yards_picks` / `resolve_passing_yards_picks`.
 
 A BTC 15-minute momentum strategy used to run alongside this. It was removed entirely (2026-09-10) at the account owner's request -- too volatile, not worth learning from. If you see references to it in old commits, that's why it's gone now.
 

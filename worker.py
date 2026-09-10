@@ -192,6 +192,16 @@ def _record_error_log(message):
 _discord_queue = defaultdict(list)
 _discord_queue_lock = threading.Lock()
 
+# Batching alone (grouping one cycle's messages into one slip) isn't
+# enough on its own -- with a short SCAN_INTERVAL_SECONDS, a new
+# single-item "slip" every cycle can still read as constant back-to-back
+# messages. This adds a real minimum time gap between actual sends, per
+# webhook, independent of scan cadence: whatever's queued just keeps
+# accumulating until this much time has passed since the last send, so
+# messages actually come in spaced-out batches instead of on every cycle.
+DISCORD_SLIP_MIN_INTERVAL_SECONDS = int(os.getenv("DISCORD_SLIP_MIN_INTERVAL_SECONDS", "900"))
+_last_flush_at = defaultdict(float)  # webhook_url -> time.monotonic() of last actual send
+
 
 def send_discord(webhook_url, message, _retries=3, immediate=False):
     if message.startswith(_ERROR_PREFIX):
@@ -225,23 +235,36 @@ def _send_discord_now(webhook_url, message, _retries=3):
     print(f"[discord] gave up after {_retries} rate-limit retries")
 
 
-def flush_discord_queue():
-    """Sends everything queued since the last flush -- one grouped,
-    slip-style message per webhook (numbered list, bet-slip style)
-    instead of a burst of separate messages. A webhook with only one
-    queued message just gets sent as-is, unchanged from before. Splits
-    into multiple sends if the combined text would exceed Discord's
-    2000-char message limit, so nothing gets silently truncated."""
+def flush_discord_queue(force=False):
+    """Sends whatever's queued as one grouped, slip-style message per
+    webhook (numbered list, bet-slip style) -- but no more often than
+    every DISCORD_SLIP_MIN_INTERVAL_SECONDS per webhook, regardless of
+    how often this gets called (once per scan cycle). A webhook not yet
+    due just keeps its messages queued for the next call that IS due --
+    nothing is lost, only delayed and grouped further, which is the
+    actual fix for messages reading as too close together. A webhook
+    with only one message when it does flush sends it as-is, unchanged
+    from before. Splits into multiple sends if the combined text would
+    exceed Discord's 2000-char message limit. Pass force=True to flush
+    right now regardless of timing (used for a manual "run now" trigger,
+    where the person is actively waiting on the result)."""
+    now = time.monotonic()
     with _discord_queue_lock:
-        pending = {url: msgs for url, msgs in _discord_queue.items() if msgs}
-        _discord_queue.clear()
+        due = {}
+        for url, msgs in list(_discord_queue.items()):
+            if not msgs:
+                continue
+            if force or (now - _last_flush_at[url]) >= DISCORD_SLIP_MIN_INTERVAL_SECONDS:
+                due[url] = msgs
+                _discord_queue[url] = []
+                _last_flush_at[url] = now
 
-    for webhook_url, messages in pending.items():
+    for webhook_url, messages in due.items():
         if len(messages) == 1:
             _send_discord_now(webhook_url, messages[0])
             continue
 
-        header = f"**📋 {len(messages)} updates this cycle:**\n"
+        header = f"**📋 {len(messages)} updates:**\n"
         chunk = header
         for i, m in enumerate(messages, 1):
             line = f"`{i}.` {m}\n"
@@ -1168,10 +1191,14 @@ def run_once(client, seen_trades, run_sports_scan=True):
 
             # PrizePicks-style player prop picks -- only for leagues we can
             # actually grade automatically (see paper_trading.py's prop
-            # section docstring for why NFL/NCAAF aren't included yet).
+            # section docstring).
             if league in pt.PROP_GRADABLE_LEAGUES:
                 prop_rows = fetch_sharpapi_player_props(league)
                 pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
+                # Passing yards -- MAIN FOCUS pick type at the user's request,
+                # high volume, independent picks (see paper_trading.py).
+                if league in pt.PASSING_YARDS_LEAGUES:
+                    pt.maybe_make_passing_yards_picks(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
@@ -1199,6 +1226,7 @@ def run_fast_cycle(client):
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
+        pt.resolve_passing_yards_picks(send_discord, None)  # Discord notice off 2026-09-10, consistent with the other resolve calls above -- new picks still post
         pt.check_profitability_milestones(
             send_discord, DISCORD_WEBHOOK_UPDATES,
             real_trading_on_by_category={"moneyline": bool(REAL_TRADING_LEAGUES)},

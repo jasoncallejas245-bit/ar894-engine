@@ -145,6 +145,43 @@ PAGE_TEMPLATE = """
     {% endfor %}
   </div>
 
+  <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
+    <h3 style="color:#8fa8ff;">🏈 Passing Yards -- Main Focus</h3>
+    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks, each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
+    <div class="row">
+      <span class="label">Picks made</span>
+      <span class="big" style="font-size:1.3em;">{{ passing_yards_summary.total_picks or 0 }}</span>
+    </div>
+    <div class="row">
+      <span class="label">Resolved / correct</span>
+      <span>{{ passing_yards_summary.resolved or 0 }} resolved{% if passing_yards_summary.win_rate is not none %} · {{ "%.0f"|format(passing_yards_summary.win_rate) }}% correct{% endif %}</span>
+    </div>
+    <div class="row">
+      <span class="label">Paper bankroll</span>
+      <span class="{{ 'red' if passing_yards_bank.balance < 100 else 'green' }}">${{ "%.2f"|format(passing_yards_bank.balance) }}</span>
+    </div>
+    <div class="bar"><div class="bar-fill" style="width:{{ (100 * (passing_yards_summary.resolved or 0) / min_sample)|round(0, 'floor')|int if (passing_yards_summary.resolved or 0) < min_sample else 100 }}%;"></div></div>
+    <div class="sub" style="margin-top:8px;">{{ passing_yards_summary.resolved or 0 }} of {{ min_sample }} needed before this counts toward the profitability check above.</div>
+
+    {% if all_passing_yards_picks %}
+    <div style="margin-top:14px;">
+      {% for p in all_passing_yards_picks[:8] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% consensus{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+        </div>
+        <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      <div class="muted" style="margin-top:10px;">No passing-yards picks yet -- shows up here as soon as NFL/NCAAF games have prop lines listed.</div>
+    {% endif %}
+  </div>
+
   <div class="grid2">
     {% for c in categories %}
     <div class="card">
@@ -506,15 +543,22 @@ def dashboard():
     all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
 
+    # Passing yards -- MAIN FOCUS, at the user's request: its own
+    # prominent card near the top of the dashboard (see the template),
+    # not buried with the other prop types.
+    all_passing_yards_picks = list(reversed(sorted(pt.load_paper_trades().get("passing_yards", []), key=lambda p: p.get("picked_at") or "")))
+    passing_yards_summary = summary.get("passing_yards", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
+    passing_yards_bank = bankroll.get("passing_yards", {"balance": pt.PAPER_STARTING_BANKROLL})
+
     # Profitability status -- same bar (real sample + real profit) the
     # Discord check_profitability_milestones alert uses, shown here too
     # so the answer is visible any time without waiting for a Discord
     # message. moneyline is the only category that could ever place a
     # REAL trade (parlay/props never can -- no Kalshi product).
     _real_capable_status = {"moneyline": bool(worker.REAL_TRADING_LEAGUES)}
-    _category_labels = {"moneyline": "Sports Moneyline", "parlay": "Parlay Mode", "props": "Player Props"}
+    _category_labels = {"moneyline": "Sports Moneyline", "parlay": "Parlay Mode", "props": "Player Props", "passing_yards": "Passing Yards (NFL/NCAAF)"}
     profitability_status = []
-    for _cat in ["moneyline", "parlay", "props"]:
+    for _cat in ["moneyline", "passing_yards", "parlay", "props"]:
         _stats = summary.get(_cat, {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None})
         _resolved = _stats.get("resolved", 0)
         _pnl = _stats.get("total_hypothetical_pnl")
@@ -675,6 +719,9 @@ def dashboard():
         all_recent_picks=all_recent_picks,
         all_parlay_tickets=all_parlay_tickets,
         all_prop_tickets=all_prop_tickets,
+        all_passing_yards_picks=all_passing_yards_picks,
+        passing_yards_summary=passing_yards_summary,
+        passing_yards_bank=passing_yards_bank,
         profitability_status=profitability_status,
         real_trading_on=real_trading_on,
         real_trading_summary=real_trading_summary,
@@ -1029,7 +1076,7 @@ def run_moneyline_scan_route():
         new_picks = pt.make_moneyline_paper_picks(
             league, rows, kalshi_events, worker.safe_match_event, worker.send_discord, worker.DISCORD_WEBHOOK_UPDATES
         )
-    worker.flush_discord_queue()  # manual trigger -- send any picks right away, don't wait for the next cycle
+    worker.flush_discord_queue(force=True)  # manual trigger -- send any picks right away, don't wait for the interval gate
 
     printed = captured.getvalue().strip()
     funnel_line = next((l for l in printed.splitlines() if "moneyline funnel" in l), printed)
