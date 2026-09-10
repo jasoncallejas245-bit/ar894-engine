@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+import threading
 from datetime import datetime, date, timezone
 from collections import defaultdict
 
@@ -287,10 +288,32 @@ def _record_error_log(message):
         print(f"[error_log] failed to record: {e}")
 
 
-def send_discord(webhook_url, message, _retries=3):
+# Picks used to fire one Discord message the instant each one happened,
+# so a scan cycle that found five picks back-to-back showed up as five
+# separate messages stacked on top of each other. Instead, non-error
+# messages are queued here and sent as a single grouped "slip" once per
+# cycle (see flush_discord_queue, called at the end of run_once/main's
+# loop) -- one clean message instead of a burst. Errors still go out
+# immediately, unbatched, since those need eyes on them right away.
+_discord_queue = defaultdict(list)
+_discord_queue_lock = threading.Lock()
+
+
+def send_discord(webhook_url, message, _retries=3, immediate=False):
     if message.startswith(_ERROR_PREFIX):
         _record_error_log(message)
         webhook_url = DISCORD_WEBHOOK_ERRORS
+        immediate = True  # errors are never batched -- always sent right away
+
+    if not immediate:
+        with _discord_queue_lock:
+            _discord_queue[webhook_url].append(message)
+        return
+
+    _send_discord_now(webhook_url, message, _retries=_retries)
+
+
+def _send_discord_now(webhook_url, message, _retries=3):
     for attempt in range(_retries):
         try:
             resp = requests.post(webhook_url, json={"content": message}, timeout=5)
@@ -306,6 +329,34 @@ def send_discord(webhook_url, message, _retries=3):
             print(f"[discord] send failed: {e}")
             return
     print(f"[discord] gave up after {_retries} rate-limit retries")
+
+
+def flush_discord_queue():
+    """Sends everything queued since the last flush -- one grouped,
+    slip-style message per webhook (numbered list, bet-slip style)
+    instead of a burst of separate messages. A webhook with only one
+    queued message just gets sent as-is, unchanged from before. Splits
+    into multiple sends if the combined text would exceed Discord's
+    2000-char message limit, so nothing gets silently truncated."""
+    with _discord_queue_lock:
+        pending = {url: msgs for url, msgs in _discord_queue.items() if msgs}
+        _discord_queue.clear()
+
+    for webhook_url, messages in pending.items():
+        if len(messages) == 1:
+            _send_discord_now(webhook_url, messages[0])
+            continue
+
+        header = f"**📋 {len(messages)} updates this cycle:**\n"
+        chunk = header
+        for i, m in enumerate(messages, 1):
+            line = f"`{i}.` {m}\n"
+            if len(chunk) + len(line) > 1900 and chunk != header:
+                _send_discord_now(webhook_url, chunk)
+                chunk = header
+            chunk += line
+        if chunk != header:
+            _send_discord_now(webhook_url, chunk)
 
 
 def load_daily_state():
@@ -1369,7 +1420,7 @@ def main():
     seen_trades = load_seen_trades()
     client = KalshiClient()
 
-    send_discord(DISCORD_WEBHOOK_UPDATES, "Updated and back online, sir.")
+    send_discord(DISCORD_WEBHOOK_UPDATES, "Updated and back online, sir.", immediate=True)
 
     last_sports_scan = 0.0
     while True:
@@ -1382,6 +1433,8 @@ def main():
             print(f"[loop] error: {e}")
             _record_cycle_status("error", error=e)
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + str(e))
+        finally:
+            flush_discord_queue()  # send this cycle's picks as one grouped slip
         time.sleep(SCAN_INTERVAL_SECONDS)
 
 

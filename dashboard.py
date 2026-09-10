@@ -1252,6 +1252,7 @@ def run_moneyline_scan_route():
         new_picks = pt.make_moneyline_paper_picks(
             league, rows, kalshi_events, worker.safe_match_event, worker.send_discord, worker.DISCORD_WEBHOOK_UPDATES
         )
+    worker.flush_discord_queue()  # manual trigger -- send any picks right away, don't wait for the next cycle
 
     printed = captured.getvalue().strip()
     funnel_line = next((l for l in printed.splitlines() if "moneyline funnel" in l), printed)
