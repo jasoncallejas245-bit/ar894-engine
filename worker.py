@@ -1207,6 +1207,12 @@ def run_once(client, seen_trades, run_sports_scan=True):
                 # high volume, independent picks (see paper_trading.py).
                 if league in pt.PASSING_YARDS_LEAGUES:
                     pt.maybe_make_passing_yards_picks(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
+                # WNBA combined-stat picks (points+rebounds+assists-style
+                # combos) -- second MAIN FOCUS pick type at the user's
+                # request, same high-volume/independently-graded approach
+                # as passing yards above, just for WNBA's combo props.
+                if league in pt.WNBA_COMBINED_STATS_LEAGUES:
+                    pt.maybe_make_wnba_combined_picks(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
@@ -1235,6 +1241,7 @@ def run_fast_cycle(client):
         pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_passing_yards_picks(send_discord, None)  # Discord notice off 2026-09-10, consistent with the other resolve calls above -- new picks still post
+        pt.resolve_wnba_combined_picks(send_discord, None)  # same pattern as passing yards resolution above
         pt.check_profitability_milestones(
             send_discord, DISCORD_WEBHOOK_UPDATES,
             real_trading_on_by_category={"moneyline": bool(REAL_TRADING_LEAGUES)},

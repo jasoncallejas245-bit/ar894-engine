@@ -246,6 +246,25 @@ def monitor_live_games(client, send_discord_fn, webhook):
             if game.get("decided"):
                 continue
 
+            # 4th-quarter foul-heavy safeguard (basketball only, at the
+            # user's request): in a close 4th quarter (or OT), teams
+            # intentionally foul to stop the clock, producing fast
+            # free-throw-driven score AND price swings that look like a
+            # "sustained move" but aren't a real signal. Skip deciding on
+            # this game entirely while it's in that window -- not a
+            # permanent skip, just waits it out; re-checked next cycle
+            # once the period changes or the game is no longer close.
+            if game.get("league") in ("nba", "wnba"):
+                try:
+                    events = context_data.get_scoreboard(game["league"])
+                    live_state = context_data.get_live_period_and_margin(
+                        game["league"], events, game["away_team"], game["home_team"]
+                    )
+                    if live_state and live_state["period"] >= 4 and live_state["margin"] <= 8:
+                        continue
+                except Exception as e:
+                    print(f"[live_trading] foul-window check failed for {game.get('away_team')} @ {game.get('home_team')}: {e}")
+
             try:
                 away_market = client.get_market(game["away_ticker"])
                 home_market = client.get_market(game["home_ticker"])

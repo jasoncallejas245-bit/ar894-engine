@@ -171,6 +171,50 @@ def get_live_score_from_scoreboard(events, league, away_team, home_team):
     return None
 
 
+def get_live_period_and_margin(league, events, away_team, home_team):
+    """
+    Like get_live_score_from_scoreboard, but also returns which period
+    (quarter) the game is in -- added at the user's request so live
+    basketball monitoring can recognize "4th quarter, close game" and
+    treat it as higher variance: teams intentionally foul in that
+    situation to stop the clock, which causes fast free-throw-driven
+    score AND price swings that don't reflect a real momentum shift.
+    Returns {"period": int, "away_score": int, "home_score": int,
+    "margin": int} or None if the game/scores/period can't be read.
+    period is ESPN's own quarter/period number (4 = 4th quarter for a
+    4-quarter sport; higher = overtime).
+    """
+    away_id = _find_team_id(league, away_team)
+    home_id = _find_team_id(league, home_team)
+    if not away_id or not home_id:
+        return None
+    try:
+        for event in events:
+            comps = (event.get("competitions") or [{}])[0].get("competitors", [])
+            ids = {c.get("team", {}).get("id") for c in comps}
+            if away_id not in ids or home_id not in ids:
+                continue
+            status = (event.get("status") or {})
+            period = status.get("period")
+            scores = {}
+            for c in comps:
+                tid = c.get("team", {}).get("id")
+                try:
+                    scores[tid] = int(c.get("score"))
+                except (TypeError, ValueError):
+                    continue
+            if period is None or away_id not in scores or home_id not in scores:
+                return None
+            away_score, home_score = scores[away_id], scores[home_id]
+            return {
+                "period": int(period), "away_score": away_score, "home_score": home_score,
+                "margin": abs(away_score - home_score),
+            }
+    except Exception as e:
+        print(f"[context_data] {league} period lookup failed: {e}")
+    return None
+
+
 def get_team_injuries(league, team_name, max_items=5, max_checked=15):
     """
     Current, notable injuries for a team -- e.g. an actual "Out" or

@@ -327,6 +327,44 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
+  <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
+    <h3 style="color:#8fa8ff;">🏀 WNBA Combined Stats -- Main Focus</h3>
+    <div class="sub" style="margin-bottom:10px;">WNBA combo props (points+rebounds+assists-style multi-stat lines) -- PRACTICE BETS OF $15 EACH -- each graded independently, same high-volume approach as Passing Yards. <strong>WNBA games run more volatile than the other leagues here</strong> -- fewer possessions and bigger swings per play than NBA/NFL, worth weighing that in before betting one yourself even on a 🔥 strong pick.</div>
+    <div class="row">
+      <span class="label">Picks made</span>
+      <span class="big" style="font-size:1.3em;">{{ wnba_combined_summary.total_picks or 0 }}</span>
+    </div>
+    <div class="row">
+      <span class="label">Resolved / correct</span>
+      <span>{{ wnba_combined_summary.resolved or 0 }} resolved{% if wnba_combined_summary.win_rate is not none %} · {{ "%.0f"|format(wnba_combined_summary.win_rate) }}% correct{% endif %}</span>
+    </div>
+    <div class="row">
+      <span class="label">Paper bankroll</span>
+      <span class="{{ 'red' if wnba_combined_bank.balance < 100 else 'green' }}">${{ "%.2f"|format(wnba_combined_bank.balance) }}</span>
+    </div>
+    <div class="bar"><div class="bar-fill" style="width:{{ (100 * (wnba_combined_summary.resolved or 0) / min_sample)|round(0, 'floor')|int if (wnba_combined_summary.resolved or 0) < min_sample else 100 }}%;"></div></div>
+    <div class="sub" style="margin-top:8px;">{{ wnba_combined_summary.resolved or 0 }} of {{ min_sample }} needed before this counts toward the profitability check above.</div>
+
+    {% if all_wnba_combined_picks %}
+    <div style="margin-top:14px;">
+      {% for p in all_wnba_combined_picks[:8] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}</div>
+          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
+        </div>
+        <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      <div class="muted" style="margin-top:10px;">No WNBA combined-stat picks yet -- shows up here as soon as WNBA games have combo prop lines listed.</div>
+    {% endif %}
+  </div>
+
   <div class="grid2">
     {% for c in categories %}
     <div class="card">
@@ -710,6 +748,10 @@ def dashboard():
     passing_yards_summary = summary.get("passing_yards", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
     passing_yards_bank = bankroll.get("passing_yards", {"balance": pt.PAPER_STARTING_BANKROLL})
 
+    all_wnba_combined_picks = list(reversed(sorted(pt.load_paper_trades().get("wnba_combined", []), key=lambda p: p.get("picked_at") or "")))
+    wnba_combined_summary = summary.get("wnba_combined", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
+    wnba_combined_bank = bankroll.get("wnba_combined", {"balance": pt.PAPER_STARTING_BANKROLL})
+
     # Profitability status -- same bar (real sample + real profit) the
     # Discord check_profitability_milestones alert uses, shown here too
     # so the answer is visible any time without waiting for a Discord
@@ -868,6 +910,9 @@ def dashboard():
     for p in all_trades_data.get("passing_yards", []):
         if p.get("status") in ("won", "lost") and p.get("resolved_at"):
             resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+    for p in all_trades_data.get("wnba_combined", []):
+        if p.get("status") in ("won", "lost") and p.get("resolved_at"):
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
     for t in all_trades_data.get("parlay", []):
         if t.get("status") in ("won", "lost") and t.get("resolved_at"):
             resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0))
@@ -917,6 +962,9 @@ def dashboard():
         all_prop_tickets=all_prop_tickets,
         all_passing_yards_picks=all_passing_yards_picks,
         passing_yards_summary=passing_yards_summary,
+        all_wnba_combined_picks=all_wnba_combined_picks,
+        wnba_combined_summary=wnba_combined_summary,
+        wnba_combined_bank=wnba_combined_bank,
         passing_yards_bank=passing_yards_bank,
         profitability_status=profitability_status,
         real_trading_on=real_trading_on,

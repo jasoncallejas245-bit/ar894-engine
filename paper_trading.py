@@ -62,6 +62,7 @@ def load_paper_trades():
     data.setdefault("props", [])
     data.setdefault("passing_yards", [])
     data.setdefault("manual_bets", [])
+    data.setdefault("wnba_combined", [])
     return data
 
 
@@ -709,7 +710,7 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "parlay", "props", "passing_yards"]:
+    for category in ["moneyline", "parlay", "props", "passing_yards", "wnba_combined"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -1734,3 +1735,229 @@ def get_loggable_picks(limit=40):
     except Exception as e:
         print(f"[paper_trading] get_loggable_picks error: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# WNBA combined-stat picks (points+rebounds+assists and other multi-stat
+# combos -- what PrizePicks/sportsbooks usually call "PRA" or a "combo"
+# prop), added at the user's request as a second high-volume, independently
+# graded main-focus category alongside passing yards. SharpAPI's exact
+# stat_category string for these wasn't independently verified live before
+# this was written (same caveat as elsewhere in this file), so instead of
+# hardcoding one exact name, _is_combined_stat_type below recognizes ANY
+# stat_type that names at least two of points/rebounds/assists -- covers
+# "points_rebounds_assists", "pts_reb_ast", "pra", "points_rebounds", etc.
+# regardless of the exact string SharpAPI actually sends. If a WNBA prop
+# feed never sends anything like that, this just never fires -- same
+# safe-fail behavior as every other unverified field in this codebase.
+# ---------------------------------------------------------------------------
+WNBA_COMBINED_STATS_LEAGUES = {"wnba"}
+WNBA_COMBINED_STAT_MIN_PROB = float(os.getenv("WNBA_COMBINED_STAT_MIN_PROB", "0.52"))
+
+# Every abbreviation/spelling for each component stat that a sportsbook
+# feed might use, checked token-by-token (not a raw substring search --
+# "ast" as a token means assists, but "ast" glued inside a longer word
+# shouldn't false-positive). "pra"/"pr"/"pa"/"ra" are fused 2-3-letter
+# tokens some feeds use for the whole combo in one word.
+_STAT_TOKEN_MAP = {
+    "points": {"points", "point", "pts", "pt"},
+    "rebounds": {"rebounds", "rebound", "reb", "rebs"},
+    "assists": {"assists", "assist", "ast", "asts"},
+}
+_FUSED_TOKEN_MAP = {
+    "pra": ["points", "rebounds", "assists"],
+    "pr": ["points", "rebounds"],
+    "rp": ["points", "rebounds"],
+    "pa": ["points", "assists"],
+    "ap": ["points", "assists"],
+    "ra": ["rebounds", "assists"],
+    "ar": ["rebounds", "assists"],
+}
+
+
+def _combined_stat_components(stat_type):
+    """
+    Returns the list of component ESPN box-score stat keys (e.g.
+    ["points", "rebounds", "assists"]) a stat_type string represents, IF
+    it names two or more of points/rebounds/assists -- checked token by
+    token (splitting on _, +, -, space) against every spelling/abbreviation
+    a feed might use ("points_rebounds_assists", "pts_reb_ast", a fused
+    "pra" token, etc.), not a raw substring search, so short abbreviations
+    like "pts" or "ast" can't false-positive inside an unrelated word.
+    Returns [] if it's not a combined stat (e.g. plain "points", or an
+    unrelated stat like "steals").
+    """
+    import re
+    s = (stat_type or "").lower()
+    tokens = [t for t in re.split(r"[^a-z0-9]+", s) if t]
+
+    found_order = []
+    for token in tokens:
+        for full, spellings in _STAT_TOKEN_MAP.items():
+            if token in spellings and full not in found_order:
+                found_order.append(full)
+                break
+        else:
+            if token in _FUSED_TOKEN_MAP:
+                for full in _FUSED_TOKEN_MAP[token]:
+                    if full not in found_order:
+                        found_order.append(full)
+
+    return found_order if len(found_order) >= 2 else []
+
+
+def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webhook=None):
+    """
+    Mirrors maybe_make_passing_yards_picks exactly, but for WNBA combined
+    (multi-stat) props instead of QB passing yards -- runs once per cycle,
+    fed that cycle's raw SharpAPI player-prop rows, makes ONE independent
+    paper pick per (player, line) where consensus clears
+    WNBA_COMBINED_STAT_MIN_PROB, no all-or-nothing bundling. Never raises.
+    """
+    if league not in WNBA_COMBINED_STATS_LEAGUES:
+        return []
+    try:
+        parsed = [
+            p for p in (_parse_player_prop_row(r) for r in prop_rows)
+            if p and _combined_stat_components(p["stat_type"])
+        ]
+        if not parsed:
+            return []
+
+        groups = {}
+        for p in parsed:
+            key = (p["player"], p["stat_type"], p["line"], p["side"])
+            groups.setdefault(key, []).append(p)
+
+        paper_data = load_paper_trades()
+        already_picked = {
+            (p["player"], p["line"], p.get("event_id"))
+            for p in paper_data["wnba_combined"] if p["status"] == "pending"
+        }
+
+        by_player_line = {}
+        for (player, stat_type, line, side), rows in groups.items():
+            probs = [r["prob"] for r in rows if r["prob"] is not None]
+            if not probs:
+                continue
+            avg_prob = sum(probs) / len(probs)
+            pl_key = (player, line)
+            existing = by_player_line.get(pl_key)
+            if existing is None or avg_prob > existing["consensus_prob"]:
+                sample = rows[0]
+                by_player_line[pl_key] = {
+                    "player": player, "stat_type": stat_type, "line": line, "side": side,
+                    "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
+                    "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
+                    "home_team": sample.get("home_team"),
+                }
+
+        new_picks = []
+        for (player, line), cand in by_player_line.items():
+            if cand["consensus_prob"] < WNBA_COMBINED_STAT_MIN_PROB:
+                continue
+            event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
+                league, cand.get("away_team"), cand.get("home_team")
+            )
+            dedup_key = (player, line, event_id)
+            if dedup_key in already_picked:
+                continue
+
+            pick = {
+                "pick_id": uuid.uuid4().hex[:12],
+                "player": player,
+                "league": league.upper(),
+                "stat_type": cand["stat_type"],
+                "line": line,
+                "side": cand["side"],
+                "consensus_prob": cand["consensus_prob"],
+                "book_count": cand["book_count"],
+                "event_id": event_id,
+                "away_team": cand.get("away_team"),
+                "home_team": cand.get("home_team"),
+                "entry_price": cand["consensus_prob"],
+                "picked_at": datetime.now().isoformat(),
+                "status": "pending",
+                "bet_tier": "strong" if cand["consensus_prob"] >= 0.60 else "thin",
+                "pick_score": round(max(0.0, min(1.0, (cand["consensus_prob"] - 0.50) / 0.20)) * 100),
+            }
+            paper_data["wnba_combined"].append(pick)
+            new_picks.append(pick)
+            already_picked.add(dedup_key)
+
+        if new_picks:
+            save_paper_trades(paper_data)
+            if send_discord_fn and webhook:
+                lines = [f"[PAPER WNBA COMBINED STATS] {len(new_picks)} pick(s) this cycle:"]
+                for p in new_picks:
+                    lines.append(f"- {p['player']} {p['side'].upper()} {p['line']} {p['stat_type']} ({p['consensus_prob']*100:.0f}%)")
+                send_discord_fn(webhook, "\n".join(lines))
+
+        return new_picks
+    except Exception as e:
+        print(f"[paper_trading] maybe_make_wnba_combined_picks error: {e}")
+        return []
+
+
+def resolve_wnba_combined_picks(send_discord_fn=None, webhook=None):
+    """
+    Checks each pending WNBA combined-stat pick against the real final
+    ESPN box score. Since ESPN only reports individual stat lines (points,
+    rebounds, assists), this sums each component stat for the combo --
+    e.g. "points_rebounds_assists" sums PTS+REB+AST. If ANY component
+    can't be found (game not final, player missing from that stat group),
+    the whole pick stays pending rather than resolving off a partial sum.
+    """
+    paper_data = load_paper_trades()
+    changed = False
+    for pick in paper_data.get("wnba_combined", []):
+        if pick["status"] != "pending" or not pick.get("event_id"):
+            continue
+        components = _combined_stat_components(pick["stat_type"])
+        if not components:
+            continue
+        try:
+            total = 0.0
+            all_found = True
+            for component in components:
+                value, found = context_data.get_player_boxscore_stat(
+                    pick["league"].lower(), pick["event_id"], pick["player"], component
+                )
+                if not found:
+                    all_found = False
+                    break
+                total += value
+        except Exception as e:
+            print(f"[paper_trading] WNBA combined-stat grading error for {pick['player']}: {e}")
+            continue
+        if not all_found:
+            continue
+
+        won = (total > pick["line"]) if pick["side"] == "over" else (total < pick["line"])
+        pick["status"] = "won" if won else "lost"
+        pick["resolved_at"] = datetime.now().isoformat()
+        pick["final_value"] = total
+
+        price = pick["entry_price"]
+        contracts = max(1.0, PAPER_STAKE_DOLLARS / price)
+        pick["stake_dollars"] = round(price * contracts, 4)
+        entry_fee = _kalshi_taker_fee_dollars_local(price, contracts)
+        pick["hypothetical_pnl"] = round(((1.0 - price) * contracts if won else -price * contracts) - entry_fee, 4)
+        changed = True
+
+        balance, is_down, down_by = record_paper_bankroll_change(
+            "wnba_combined", pick["hypothetical_pnl"], f"{pick['player']}-{pick['line']}",
+            note=f"{pick['league']} {pick['player']} {pick['side']} {pick['line']} {pick['status']}",
+        )
+
+        if send_discord_fn and webhook:
+            pnl_str = f"${pick['hypothetical_pnl']:+.2f}"
+            bankroll_str = f" | paper bankroll: ${balance:.2f}" + (f" (down ${down_by:.2f})" if is_down else "")
+            send_discord_fn(
+                webhook,
+                f"[RESOLVED - WNBA COMBINED] {pick['player']} {pick['side'].upper()} {pick['line']} {pick['stat_type']}: "
+                f"{pick['status'].upper()} (actual {total:.0f}, hypothetical P&L: {pnl_str}{bankroll_str})"
+            )
+
+    if changed:
+        save_paper_trades(paper_data)
