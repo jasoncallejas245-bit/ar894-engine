@@ -532,6 +532,29 @@ def fetch_sharpapi_player_props(league):
                 DISCORD_WEBHOOK_UPDATES,
                 f"[props] {league} player_props first sample row, for verifying the field names match what the code expects:\n{rows[0]}",
             )
+            # Also written to a small debug file (readable via the dashboard's
+            # /debug/props_sample route) so this can be checked directly
+            # without needing Discord access -- see dashboard.py.
+            try:
+                from state_io import atomic_write_json
+                atomic_write_json(
+                    os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_debug_sample.json"),
+                    {"league": league, "sample_row": rows[0], "at": datetime.now().isoformat()},
+                )
+            except Exception as e:
+                print(f"[props] debug sample write failed: {e}")
+        elif not rows and not logged_sample:
+            # Confirms the request itself didn't error but came back empty --
+            # different from a schema-mismatch (which would still return rows,
+            # just ones _parse_player_prop_row can't read).
+            try:
+                from state_io import atomic_write_json
+                atomic_write_json(
+                    os.path.join(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "."), "props_debug_sample.json"),
+                    {"league": league, "sample_row": None, "note": "request succeeded but returned zero rows", "at": datetime.now().isoformat()},
+                )
+            except Exception:
+                pass
         all_rows.extend(rows)
         pagination = body.get("pagination", {})
         if not pagination.get("has_more"):

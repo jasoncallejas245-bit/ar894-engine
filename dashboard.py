@@ -1350,6 +1350,23 @@ def sharpapi_fetch_health_route():
     }
 
 
+@app.route("/debug/props_sample")
+def debug_props_sample_route():
+    """
+    Read-only: shows the most recent raw SharpAPI player-prop row
+    fetch_sharpapi_player_props saw (or a note that a fetch returned zero
+    rows), written by worker.py the first time each cycle it gets a
+    result. Exists to verify the player-prop field-name guesses in
+    paper_trading._parse_player_prop_row without needing Discord access --
+    see that function's docstring for why the exact schema wasn't
+    confirmed before deploying.
+    """
+    sample = load_json("props_debug_sample.json", None)
+    if sample is None:
+        return {"status": "no data yet -- no player-prop fetch has completed since this route was added"}
+    return sample
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
