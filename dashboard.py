@@ -11,14 +11,18 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 app = Flask(__name__)
 
 
-def _build_pnl_chart_svg(points, width=560, height=140):
+def _build_pnl_chart_svg(points, width=560, height=140, labels=None):
     """
     Small dependency-free SVG line chart of cumulative hypothetical P&L
     across every resolved paper pick, oldest to newest -- a PrizePicks-
     style "how am I doing" trend line, rendered server-side so the
     dashboard doesn't need a JS charting library. `points` is a list of
-    running totals, starting at 0. Never raises -- returns a placeholder
-    SVG on bad input rather than crashing the whole page.
+    running totals, starting at 0. `labels`, if given, is a same-length
+    list of hover-tooltip strings (one per point, index 0 = the "$0.00
+    start" point) -- rendered as native SVG <title> elements, so hovering
+    any point on the line shows what it was without any JS. Never raises
+    -- returns a placeholder SVG on bad input rather than crashing the
+    whole page.
     """
     try:
         if not points or len(points) < 2:
@@ -62,7 +66,7 @@ def _build_pnl_chart_svg(points, width=560, height=140):
         )
 
         svg_parts = []
-        svg_parts.append('<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block; overflow:visible;">'.format(w=width, h=height))
+        svg_parts.append('<svg class="pnl-chart" viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block; overflow:visible;">'.format(w=width, h=height))
         svg_parts.append('<defs><linearGradient id="{fid}" x1="0" y1="0" x2="0" y2="1">'.format(fid=fill_id))
         svg_parts.append('<stop offset="0%" stop-color="{c}" stop-opacity="0.28" />'.format(c=line_color))
         svg_parts.append('<stop offset="100%" stop-color="{c}" stop-opacity="0" />'.format(c=line_color))
@@ -71,6 +75,23 @@ def _build_pnl_chart_svg(points, width=560, height=140):
         svg_parts.append('<path d="{d}" fill="url(#{fid})" stroke="none" />'.format(d=area_d, fid=fill_id))
         svg_parts.append('<path d="{d}" fill="none" stroke="{c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />'.format(d=path_d, c=line_color))
         svg_parts.append('<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{c}" />'.format(x=last_x, y=last_y, c=line_color))
+
+        # Hover targets: one per data point, invisible until hovered, each
+        # wrapping a native SVG <title> tooltip -- no JS/charting library
+        # needed, works the same on mobile (tap-and-hold) as desktop hover.
+        import html as _html
+        for i, (x, y) in enumerate(coords):
+            tip = labels[i] if labels and i < len(labels) else "${:+.2f}".format(points[i])
+            svg_parts.append(
+                '<circle cx="{x:.1f}" cy="{y:.1f}" r="9" fill="{c}" opacity="0" '
+                'style="cursor:pointer;"><title>{tip}</title></circle>'
+                .format(x=x, y=y, c=line_color, tip=_html.escape(tip))
+            )
+            svg_parts.append(
+                '<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" fill="{c}" opacity="0" '
+                'class="pnl-dot" style="pointer-events:none;" />'
+                .format(x=x, y=y, c=line_color)
+            )
         svg_parts.append('</svg>')
         return "".join(svg_parts)
     except Exception as e:
@@ -126,6 +147,7 @@ PAGE_TEMPLATE = """
   .badge-data { background:#1c2230; color:#6e7a94; border:1px solid #2a3348; }
   .score-bar { background:#1c2230; border-radius:8px; height:5px; overflow:hidden; margin-top:6px; }
   .score-bar-fill { height:100%; border-radius:8px; transition:width 0.3s ease; }
+  .pnl-chart circle:hover + .pnl-dot { opacity:1 !important; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width:480px) { .grid2 { grid-template-columns:1fr; } }
   .bar { background:#1c2230; border-radius:8px; height:7px; overflow:hidden; margin-top:9px; }
@@ -312,7 +334,7 @@ PAGE_TEMPLATE = """
       {% for p in all_passing_yards_picks[:8] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
+          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
           <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
@@ -350,7 +372,7 @@ PAGE_TEMPLATE = """
       {% for p in all_wnba_combined_picks[:8] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
+          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
           <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
@@ -937,27 +959,38 @@ def dashboard():
     resolved_events = []
     for p in all_trades_data.get("moneyline", []):
         if p.get("status") in ("won", "lost") and p.get("resolved_at"):
-            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0,
+                                     f"{p.get('picked_team', '?')} ({p.get('league', '?')})"))
     for p in all_trades_data.get("passing_yards", []):
         if p.get("status") in ("won", "lost") and p.get("resolved_at"):
-            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0,
+                                     f"{p.get('player', '?')} {p.get('side', '')} {p.get('line', '')} yds"))
     for p in all_trades_data.get("wnba_combined", []):
         if p.get("status") in ("won", "lost") and p.get("resolved_at"):
-            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0))
+            resolved_events.append((p["resolved_at"], p.get("hypothetical_pnl") or 0.0,
+                                     f"{p.get('player', '?')} {p.get('side', '')} {p.get('line', '')} {p.get('stat_type', '')}"))
     for t in all_trades_data.get("parlay", []):
         if t.get("status") in ("won", "lost") and t.get("resolved_at"):
-            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0))
+            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0,
+                                     f"{len(t.get('legs', []))}-leg parlay"))
     for t in all_trades_data.get("props", []):
         if t.get("status") in ("won", "lost") and t.get("resolved_at"):
-            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0))
+            resolved_events.append((t["resolved_at"], t.get("hypothetical_pnl") or 0.0,
+                                     f"{len(t.get('legs', []))}-leg prop ticket"))
     resolved_events.sort(key=lambda e: e[0])
 
     running = 0.0
     pnl_points = [0.0]
-    for _, pnl in resolved_events:
+    pnl_labels = ["Start · running total: $0.00"]
+    for resolved_at, pnl, desc in resolved_events:
         running += pnl
         pnl_points.append(round(running, 2))
-    chart_svg = _build_pnl_chart_svg(pnl_points)
+        try:
+            when = datetime.fromisoformat(resolved_at).strftime("%b %d, %I:%M %p")
+        except Exception:
+            when = resolved_at
+        pnl_labels.append(f"{when} · {desc} · this pick: ${pnl:+.2f} · running total: ${running:+.2f}")
+    chart_svg = _build_pnl_chart_svg(pnl_points, labels=pnl_labels)
     total_resolved_count = len(resolved_events)
     net_pnl = pnl_points[-1] if pnl_points else 0.0
 

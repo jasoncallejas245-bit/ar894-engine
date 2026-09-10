@@ -1131,6 +1131,7 @@ def _parse_player_prop_row(row):
             "event_id": row.get("event_id"),
             "away_team": row.get("away_team"),
             "home_team": row.get("home_team"),
+            "is_alternate_line": bool(row.get("is_alternate_line")),
         }
     except Exception:
         return None
@@ -1371,15 +1372,18 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
             for p in paper_data["passing_yards"] if p["status"] == "pending"
         }
 
-        # Pick the stronger side per (player, line) -- never both over
-        # and under on the same line, since they're complementary bets.
+        # Pick the single SAFEST side/line per player -- across every line
+        # a sportsbook offers (main line and any alternate/"goblin" lines
+        # alike), not just over-vs-under on one line. Prefers whichever
+        # has the highest consensus probability, so a safer alt line beats
+        # a marginal main-line coinflip whenever one's available.
         by_player_line = {}
         for (player, line, side), rows in groups.items():
             probs = [r["prob"] for r in rows if r["prob"] is not None]
             if not probs:
                 continue
             avg_prob = sum(probs) / len(probs)
-            pl_key = (player, line)
+            pl_key = player
             existing = by_player_line.get(pl_key)
             if existing is None or avg_prob > existing["consensus_prob"]:
                 sample = rows[0]
@@ -1388,10 +1392,12 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                     "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
                     "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
                     "home_team": sample.get("home_team"),
+                    "is_alternate_line": any(r.get("is_alternate_line") for r in rows),
                 }
 
         new_picks = []
-        for (player, line), cand in by_player_line.items():
+        for player, cand in by_player_line.items():
+            line = cand["line"]
             if cand["consensus_prob"] < PASSING_YARDS_MIN_PROB:
                 continue
             event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
@@ -1410,6 +1416,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                 "side": cand["side"],
                 "consensus_prob": cand["consensus_prob"],
                 "book_count": cand["book_count"],
+                "is_alternate_line": cand.get("is_alternate_line", False),
                 "event_id": event_id,
                 "away_team": cand.get("away_team"),
                 "home_team": cand.get("home_team"),
@@ -1867,17 +1874,21 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
             for p in paper_data["wnba_combined"] if p["status"] == "pending"
         }
 
+        # Collapse across every LINE offered for a given (player, stat_type)
+        # -- main line and any alternate/"goblin" lines alike -- and keep
+        # only the safest one (highest consensus probability). stat_type
+        # stays a separate key from line/side (points+rebounds and
+        # points+assists for the same player are genuinely different
+        # bets), but within one stat_type there's no reason to take a
+        # marginal ~52-53% main-line coinflip when a safer alt line is
+        # also on offer for the same player/stat.
         by_player_line = {}
         for (player, stat_type, line, side), rows in groups.items():
             probs = [r["prob"] for r in rows if r["prob"] is not None]
             if not probs:
                 continue
             avg_prob = sum(probs) / len(probs)
-            # Keyed on (player, stat_type, line), not just (player, line) --
-            # two different combined-stat props for the same player (e.g.
-            # points+rebounds vs points+assists) can coincidentally share
-            # a line value, and used to silently overwrite each other here.
-            pl_key = (player, stat_type, line)
+            pl_key = (player, stat_type)
             existing = by_player_line.get(pl_key)
             if existing is None or avg_prob > existing["consensus_prob"]:
                 sample = rows[0]
@@ -1886,10 +1897,12 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
                     "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
                     "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
                     "home_team": sample.get("home_team"),
+                    "is_alternate_line": any(r.get("is_alternate_line") for r in rows),
                 }
 
         new_picks = []
-        for (player, line), cand in by_player_line.items():
+        for (player, stat_type), cand in by_player_line.items():
+            line = cand["line"]
             if cand["consensus_prob"] < WNBA_COMBINED_STAT_MIN_PROB:
                 continue
             event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
@@ -1908,6 +1921,7 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
                 "side": cand["side"],
                 "consensus_prob": cand["consensus_prob"],
                 "book_count": cand["book_count"],
+                "is_alternate_line": cand.get("is_alternate_line", False),
                 "event_id": event_id,
                 "away_team": cand.get("away_team"),
                 "home_team": cand.get("home_team"),
