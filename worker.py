@@ -1014,6 +1014,152 @@ def reconcile_settled_positions(client):
         save_open_positions(positions)
 
 
+MANUAL_POSITIONS_FILE = os.path.join(DATA_DIR, "manual_positions.json")
+
+def load_manual_positions():
+    return safe_read_json(MANUAL_POSITIONS_FILE, {})
+
+def save_manual_positions(positions):
+    atomic_write_json(MANUAL_POSITIONS_FILE, positions)
+
+
+def sync_manual_positions(client):
+    """
+    Auto-detects and logs bets the user places THEMSELVES directly on
+    Kalshi (not through this bot), by diffing the real account's live
+    positions against the bot's own known open positions (OPEN_POSITIONS_FILE)
+    -- anything left over is something the user must have placed manually,
+    since it's the same Kalshi account either way. Replaces having to fill
+    out a manual-bet form by hand: this runs every cycle, same as
+    reconcile_settled_positions.
+
+    While a manual position is open, this keeps its tracked entry price and
+    size updated to the account's current average (in case the user adds to
+    it). Once a tracked manual position disappears from the live list, it's
+    been closed one of two ways:
+      - it settled (won/lost) -- get_settlements() gives the exact real
+        revenue vs. cost, so the recorded P&L is exact, not estimated.
+      - the user sold it back before settlement -- there's no settlement
+        record for that, so P&L is best-effort from the fill history
+        (buys cost money, sells return money, fees always subtract).
+    Either way it's recorded to manual_positions.json with a real dollar
+    P&L, and the dashboard can show it without the user typing anything in.
+    """
+    try:
+        live_positions = client.portfolio.get_positions()
+    except Exception as e:
+        print(f"[manual_positions] could not fetch live positions: {e}")
+        return
+
+    live_map = {}
+    for p in live_positions:
+        count_fp = float(getattr(p, "position_fp", 0) or 0)
+        if count_fp == 0:
+            continue
+        live_map[p.ticker] = p
+
+    bot_tickers = set(load_open_positions().keys())
+    store = load_manual_positions()
+
+    # --- detect new / update open manual positions ---
+    for ticker, p in live_map.items():
+        if ticker in bot_tickers:
+            continue  # this is the bot's own real position, not a manual one
+
+        count_fp = float(p.position_fp)
+        side_label = "YES" if count_fp > 0 else "NO"
+        exposure = float(getattr(p, "market_exposure_dollars", 0) or 0)
+        entry_price = round(exposure / abs(count_fp), 4) if count_fp else None
+
+        rec = store.get(ticker)
+        if rec is None or rec.get("status") != "open":
+            market_title = None
+            try:
+                market_title = getattr(client.get_market(ticker), "title", None)
+            except Exception:
+                pass
+            store[ticker] = {
+                "ticker": ticker,
+                "side": side_label,
+                "count_fp": abs(count_fp),
+                "entry_price": entry_price,
+                "market_title": market_title,
+                "opened_at": datetime.now().isoformat(),
+                "status": "open",
+            }
+            save_manual_positions(store)
+            send_discord(
+                DISCORD_WEBHOOK_UPDATES,
+                f"[MANUAL BET DETECTED] {ticker}"
+                + (f" ({market_title})" if market_title else "")
+                + f" [{side_label}] x{abs(count_fp):.2f} @ ~${entry_price:.2f} "
+                  "-- looks like you placed this yourself on Kalshi, now tracking it.",
+            )
+        else:
+            # still open -- keep size/avg-price current in case they added to it
+            rec["count_fp"] = abs(count_fp)
+            if entry_price is not None:
+                rec["entry_price"] = entry_price
+
+    # --- resolve manual positions that dropped off the live list ---
+    dirty = False
+    for ticker, rec in list(store.items()):
+        if rec.get("status") != "open" or ticker in live_map:
+            continue
+
+        pnl = None
+        note = None
+        try:
+            settlements = client.portfolio.get_settlements(ticker=ticker, fetch_all=True)
+        except Exception:
+            settlements = []
+        settle = next((s for s in settlements if getattr(s, "ticker", None) == ticker), None)
+
+        if settle is not None:
+            cost = float(getattr(settle, "yes_total_cost_dollars", None) or 0) +                    float(getattr(settle, "no_total_cost_dollars", None) or 0)
+            revenue = (getattr(settle, "revenue", 0) or 0) / 100.0
+            pnl = round(revenue - cost, 2)
+            note = f"settled {getattr(settle, 'market_result', None) or '?'}"
+        else:
+            # Not in settlements -- most likely sold back manually before the
+            # market settled. Reconstruct P&L from the fill history: buys
+            # (book_side == bid) cost money, sells (book_side == ask) return
+            # money, fees always subtract. Best-effort -- if fills can't be
+            # read this is left as pnl_unknown rather than guessed.
+            try:
+                fills = client.portfolio.get_fills(ticker=ticker, fetch_all=True)
+                net = 0.0
+                for f in fills:
+                    price = float(f.yes_price_dollars or f.no_price_dollars or 0)
+                    qty = float(f.count_fp or 0)
+                    fee = float(getattr(f, "fee_cost_dollars", None) or 0)
+                    net += (-price * qty if f.is_bid else price * qty) - fee
+                pnl = round(net, 2)
+                note = "closed early (from fill history)"
+            except Exception as e:
+                note = f"closed, could not reconstruct P&L ({e})"
+
+        rec["status"] = "resolved"
+        rec["resolved_at"] = datetime.now().isoformat()
+        rec["pnl"] = pnl
+        rec["note"] = note
+        dirty = True
+
+        if pnl is not None:
+            send_discord(
+                DISCORD_WEBHOOK_UPDATES,
+                f"[MANUAL BET RESOLVED] {ticker}: {note}, P&L ${pnl:+.2f}",
+            )
+        else:
+            send_discord(
+                DISCORD_WEBHOOK_UPDATES,
+                f"[MANUAL BET CLOSED] {ticker}: {note} -- check Kalshi directly for exact P&L",
+            )
+
+    if dirty:
+        save_manual_positions(store)
+
+
 def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
     series_ticker = LEAGUE_SERIES[league]
     kalshi_markets = get_open_markets(client, series_ticker)
@@ -1187,6 +1333,7 @@ def run_once(client, seen_trades, run_sports_scan=True):
     _record_cycle_status("started", run_sports_scan=run_sports_scan)
     check_and_close_profitable_positions(client)
     reconcile_settled_positions(client)
+    sync_manual_positions(client)
 
     if not run_sports_scan:
         run_fast_cycle(client)

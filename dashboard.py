@@ -311,6 +311,26 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
+  <div class="card">
+    <h3>Auto-Detected Kalshi Bets</h3>
+    <div class="sub" style="margin-bottom:10px;">Real trades placed directly on Kalshi (not through this bot) -- detected and tracked automatically from your account connection. Nothing to log by hand here.</div>
+    {% if auto_manual_positions %}
+    {% for m in auto_manual_positions %}
+    <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+      <div>
+        <div><strong>{{ m.market_title or m.ticker }}</strong> <span class="badge">{{ m.side }}</span> <span class="badge">x{{ "%.2f"|format(m.count_fp) }}</span>{% if m.status == 'open' %} <span class="badge">entry ${{ "%.2f"|format(m.entry_price) if m.entry_price is not none else '?' }}</span>{% endif %}</div>
+        <div class="sub">{{ (m.resolved_at or m.opened_at) }}{% if m.note %} · {{ m.note }}{% endif %}</div>
+      </div>
+      <div class="{{ 'green' if (m.pnl or 0) >= 0 else 'red' }}" style="white-space:nowrap;">
+        {% if m.status == 'open' %}open{% elif m.pnl is not none %}${{ "%.2f"|format(m.pnl) }}{% else %}closed{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="muted">No manual Kalshi activity detected yet.</div>
+    {% endif %}
+  </div>
+
   <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
     <h3 style="color:#8fa8ff;">🏈 Passing Yards -- Main Focus</h3>
     <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks -- PRACTICE BETS OF $15 EACH -- each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
@@ -997,12 +1017,18 @@ def dashboard():
     parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
 
     manual_bet_summary = pt.get_manual_bet_summary()
+    auto_manual_positions = sorted(
+        worker.load_manual_positions().values(),
+        key=lambda m: m.get("resolved_at") or m.get("opened_at") or "",
+        reverse=True,
+    )
     manual_bets_list = pt.get_manual_bets_with_status()[:20]
     loggable_picks = pt.get_loggable_picks()
 
     return render_template_string(
         PAGE_TEMPLATE,
         manual_bet_summary=manual_bet_summary,
+        auto_manual_positions=auto_manual_positions,
         manual_bets_list=manual_bets_list,
         loggable_picks=loggable_picks,
         balance=balance,
