@@ -814,6 +814,15 @@ def get_pending_bet_tier_breakdown():
                 "label": _pending_pick_label(category, pick),
                 "picked_at": pick.get("picked_at"),
                 "timing": format_event_timing(pick.get("event_start_time")),
+                # Raw identifiers so the dashboard can cross-reference this
+                # pick against parlay/player-props tickets and show "also
+                # bundled in ___" -- only the ones relevant to this
+                # category will actually be set.
+                "kalshi_ticker": pick.get("kalshi_ticker"),
+                "player": pick.get("player"),
+                "stat_type": pick.get("stat_type"),
+                "line": pick.get("line"),
+                "event_id": pick.get("event_id"),
             })
 
     for tier in picks_by_tier:
@@ -1175,7 +1184,13 @@ def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
 # is worse than not grading it at all.
 # ---------------------------------------------------------------------------
 PROP_PICKS_ENABLED = os.getenv("PROP_PICKS_PAPER_ENABLED", "true").lower() == "true"
-PROP_LEG_COUNT = int(os.getenv("PROP_LEG_COUNT", "4"))
+# Real PrizePicks Power Plays start at 2 legs (not just 4) -- mirrors
+# PARLAY_LEG_COUNTS below so this actually matches how PrizePicks works,
+# instead of only ever building one fixed 4-leg ticket.
+PROP_LEG_COUNTS = [int(n) for n in os.getenv("PROP_LEG_COUNTS", "2,3,4").split(",") if n.strip()]
+# Kept as a read-only alias for anything (e.g. older dashboard code) still
+# expecting a single number -- always the largest configured leg count.
+PROP_LEG_COUNT = max(PROP_LEG_COUNTS) if PROP_LEG_COUNTS else 4
 PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.55"))
 # NFL/NCAAF added 2026-09-10, at the user's request (they specifically
 # want passing-yards picks) -- previously excluded over a real concern
@@ -1241,17 +1256,21 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
     SharpAPI player-prop rows. Groups parsed rows by (player, stat_type,
     line, side), averages the implied probability across whichever
     sportsbooks quote it, keeps only sides clearing PROP_MIN_CONSENSUS_PROB,
-    picks the strongest PROP_LEG_COUNT (one leg per player, so a ticket
-    reads like a real PrizePicks slip -- different players, not the same
-    guy twice), and paper-tracks them as one all-or-nothing ticket, same
-    structure as parlay mode. Never raises.
+    then builds ONE ticket per leg count in PROP_LEG_COUNTS (2, 3, 4 by
+    default) from the same ranked candidate pool -- same pattern as
+    maybe_make_parlay_pick, and matches how PrizePicks Power Plays
+    actually work in reality (they start at 2 legs, not just 4). Each
+    ticket is one leg per player (a ticket reads like a real PrizePicks
+    slip -- different players, not the same guy twice), tracked as its
+    own all-or-nothing bet. Returns the list of tickets made this cycle
+    (may be empty). Never raises.
     """
-    if not PROP_PICKS_ENABLED or league not in PROP_GRADABLE_LEAGUES:
-        return None
+    if not PROP_PICKS_ENABLED or league not in PROP_GRADABLE_LEAGUES or not PROP_LEG_COUNTS:
+        return []
     try:
         parsed = [p for p in (_parse_player_prop_row(r) for r in prop_rows) if p]
         if not parsed:
-            return None
+            return []
 
         groups = {}
         for p in parsed:
@@ -1275,51 +1294,63 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
                 "event_start_time": sample.get("event_start_time"),
             })
 
-        if len(candidates) < PROP_LEG_COUNT:
-            return None
+        max_legs = max(PROP_LEG_COUNTS)
+        if len(candidates) < min(PROP_LEG_COUNTS):
+            return []
 
         candidates.sort(key=lambda c: c["consensus_prob"], reverse=True)
-        legs, used_players = [], set()
+        ranked, used_players = [], set()
         for c in candidates:
             if c["player"] in used_players:
                 continue
-            legs.append(c)
+            ranked.append(c)
             used_players.add(c["player"])
-            if len(legs) == PROP_LEG_COUNT:
+            if len(ranked) == max_legs:
                 break
-        if len(legs) < PROP_LEG_COUNT:
-            return None
+        if not ranked:
+            return []
 
-        for leg in legs:
+        for leg in ranked:
             if not leg.get("event_id"):
                 leg["event_id"] = context_data.get_event_id_for_matchup(league, leg.get("away_team"), leg.get("home_team"))
 
-        ticket = {
-            "ticket_id": f"prop-{datetime.now().isoformat()}",
-            "league": league,
-            "legs": legs,
-            "stake_dollars": PAPER_STAKE_DOLLARS,
-            "picked_at": datetime.now().isoformat(),
-            "status": "pending",
-        }
         paper_data = load_paper_trades()
-        paper_data.setdefault("props", []).append(ticket)
-        save_paper_trades(paper_data)
+        tickets = []
+        for leg_count in sorted(set(PROP_LEG_COUNTS)):
+            if len(ranked) < leg_count:
+                continue
+            legs = ranked[:leg_count]
+            ticket = {
+                "ticket_id": f"prop-{leg_count}leg-{datetime.now().isoformat()}",
+                "league": league,
+                "leg_count": leg_count,
+                "legs": legs,
+                "stake_dollars": PAPER_STAKE_DOLLARS,
+                "picked_at": datetime.now().isoformat(),
+                "status": "pending",
+            }
+            paper_data.setdefault("props", []).append(ticket)
+            tickets.append(ticket)
+
+        if tickets:
+            save_paper_trades(paper_data)
 
         if send_discord_fn and webhook:
-            leg_lines = "\n".join(
-                f"  - {l['player']} {l['side'].upper()} {l['line']} {l['stat_type']} ({l['consensus_prob']*100:.0f}%)"
-                for l in legs
-            )
-            send_discord_fn(
-                webhook,
-                f"[PAPER PRIZEPICKS-STYLE] New {len(legs)}-leg {league.upper()} ticket:\n{leg_lines}\n"
-                f"(Paper only -- uses sportsbook consensus lines, not PrizePicks' own numbers -- see code comments)"
-            )
-        return ticket
+            for ticket in tickets:
+                legs = ticket["legs"]
+                leg_lines = "\n".join(
+                    f"  - {l['player']} {l['side'].upper()} {l['line']} {l['stat_type']} ({l['consensus_prob']*100:.0f}%)"
+                    for l in legs
+                )
+                send_discord_fn(
+                    webhook,
+                    f"[PAPER PRIZEPICKS-STYLE] New {len(legs)}-leg {league.upper()} ticket:\n{leg_lines}\n"
+                    f"(Paper only -- uses sportsbook consensus lines, not PrizePicks' own numbers -- see code comments)"
+                )
+        return tickets
     except Exception as e:
         print(f"[paper_trading] maybe_make_prop_pick error: {e}")
-        return None
+        return []
 
 
 def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):

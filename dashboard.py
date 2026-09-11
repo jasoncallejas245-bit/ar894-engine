@@ -224,7 +224,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.strong %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -238,7 +238,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.thin %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -252,7 +252,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.skip %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -371,7 +371,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -488,7 +488,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -764,9 +764,9 @@ def dashboard():
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - props_bank["balance"]),
             "settings": [
                 {
-                    "label": "Legs per ticket",
-                    "value": f"{pt.PROP_LEG_COUNT}",
-                    "explanation": "Bundles this many different players' strongest sportsbook-consensus prop picks into one all-or-nothing ticket, PrizePicks Power-Play style.",
+                    "label": "Leg-count combos tried",
+                    "value": ", ".join(str(n) for n in sorted(set(pt.PROP_LEG_COUNTS))),
+                    "explanation": "Builds one all-or-nothing ticket per leg count every cycle, reusing the same ranked player pool for each -- matches how real PrizePicks Power Plays work (they start at 2 legs, not just 4).",
                 },
                 {
                     "label": "Minimum consensus required",
@@ -981,6 +981,45 @@ def dashboard():
     for t in all_prop_tickets:
         t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
 
+    # Cross-reference every parlay/props ticket back to the individual
+    # picks that make it up, so a pick shown on its own elsewhere (All
+    # Recent Picks, Passing Yards, the pending-tier lists) can say which
+    # ticket(s) it's actually bundled into -- previously that link only
+    # showed up in the separate "All Parlay/Prop Tickets" sections.
+    ticker_to_parlays = {}
+    for t in all_parlay_tickets:
+        desc = f"{t.get('leg_count', len(t.get('legs', [])))}-leg parlay"
+        for leg in t.get("legs", []):
+            ticker = leg.get("kalshi_ticker")
+            if ticker:
+                ticker_to_parlays.setdefault(ticker, []).append(desc)
+
+    propkey_to_tickets = {}
+    for t in all_prop_tickets:
+        desc = f"{t.get('leg_count', len(t.get('legs', [])))}-leg {str(t.get('league', '')).upper()} props ticket"
+        for leg in t.get("legs", []):
+            key = (leg.get("player"), leg.get("stat_type"), leg.get("line"), leg.get("event_id"))
+            if key[0] and key[2] is not None:
+                propkey_to_tickets.setdefault(key, []).append(desc)
+
+    def _bundle_labels_for_ticker(ticker):
+        return ticker_to_parlays.get(ticker, [])
+
+    def _bundle_labels_for_prop(player, stat_type, line, event_id):
+        return propkey_to_tickets.get((player, stat_type, line, event_id), [])
+
+    for p in all_recent_picks:
+        p["bundled_in"] = _bundle_labels_for_ticker(p.get("kalshi_ticker"))
+    for p in all_passing_yards_picks:
+        p["bundled_in"] = _bundle_labels_for_prop(p.get("player"), p.get("stat_type") or "passing_yards", p.get("line"), p.get("event_id"))
+    for p in all_wnba_combined_picks:
+        # WNBA combined-stat picks (e.g. "points_rebounds") are a bot-computed
+        # sum of two individual stats -- the generic Player Props ticket
+        # builder only ever uses raw single-stat categories, so there's
+        # structurally no ticket these could match. Always empty, kept for
+        # template consistency.
+        p["bundled_in"] = []
+
     # Pending Picks -- every still-open moneyline pick, with when it
     # started/starts and when it resolves, so there's one place to see
     # "what's live right now and when do I find out."
@@ -1068,6 +1107,14 @@ def dashboard():
     parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
 
     pending_tier_breakdown = pt.get_pending_bet_tier_breakdown()
+    for tier_rows in pending_tier_breakdown["picks"].values():
+        for row in tier_rows:
+            if row.get("kalshi_ticker"):
+                row["bundled_in"] = _bundle_labels_for_ticker(row["kalshi_ticker"])
+            elif row.get("player"):
+                row["bundled_in"] = _bundle_labels_for_prop(row["player"], row.get("stat_type") or "passing_yards", row.get("line"), row.get("event_id"))
+            else:
+                row["bundled_in"] = []
     auto_manual_positions = sorted(
         worker.load_manual_positions().values(),
         key=lambda m: m.get("resolved_at") or m.get("opened_at") or "",
