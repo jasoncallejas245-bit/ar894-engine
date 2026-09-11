@@ -213,18 +213,58 @@ PAGE_TEMPLATE = """
   {% endif %}
 
   <div class="card">
+    <h3>Pending Picks by Tier</h3>
+    <div class="sub" style="margin-bottom:12px;">How many picks are currently in play in each profitability tier -- tap a tier to see exactly which picks are in it.</div>
+
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:4px;">
+      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
+        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
+          <span class="badge badge-bet" style="font-size:1em;">🔥 Strong -- bet this</span>
+          <span class="big">{{ pending_tier_breakdown.counts.strong }}</span>
+        </summary>
+        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
+          {% for row in pending_tier_breakdown.picks.strong %}
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          {% else %}
+          <div class="muted">None pending right now.</div>
+          {% endfor %}
+        </div>
+      </details>
+
+      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
+        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
+          <span class="badge badge-thin" style="font-size:1em;">👍 Thin edge -- your call</span>
+          <span class="big">{{ pending_tier_breakdown.counts.thin }}</span>
+        </summary>
+        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
+          {% for row in pending_tier_breakdown.picks.thin %}
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          {% else %}
+          <div class="muted">None pending right now.</div>
+          {% endfor %}
+        </div>
+      </details>
+
+      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
+        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
+          <span class="badge badge-data" style="font-size:1em;">⚠ Skip -- no edge</span>
+          <span class="big">{{ pending_tier_breakdown.counts.skip }}</span>
+        </summary>
+        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
+          {% for row in pending_tier_breakdown.picks.skip %}
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          {% else %}
+          <div class="muted">None pending right now.</div>
+          {% endfor %}
+        </div>
+      </details>
+    </div>
+    <div class="sub" style="margin-top:4px;">{{ pending_tier_breakdown.counts.total_pending }} pending total</div>
+  </div>
+
+  <div class="card">
     <h3>Profitability Status -- All Strategies</h3>
     <div class="sub" style="margin-bottom:10px;">Crosses BOTH a real sample size ({{ min_sample }}+ resolved picks) and genuine profit before counting as "profitable" here -- same bar the Discord alerts use.</div>
-
-    <div class="row" style="margin-bottom:14px; padding:10px; background:#161b26; border-radius:8px; border:1px solid #2a3348;">
-      <span class="label">Pending picks right now</span>
-      <span>
-        <span class="badge badge-bet">🔥 {{ pending_tier_counts.strong }} strong</span>
-        <span class="badge badge-thin">👍 {{ pending_tier_counts.thin }} thin</span>
-        <span class="badge badge-data">⚠ {{ pending_tier_counts.skip }} skip</span>
-        <span class="muted">({{ pending_tier_counts.total_pending }} total)</span>
-      </span>
-    </div>
 
     {% for p in profitability_status %}
     <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
@@ -284,54 +324,6 @@ PAGE_TEMPLATE = """
       </div>
       {% endfor %}
     </div>
-    {% endif %}
-  </div>
-
-  <div class="card">
-    <h3>Your Manual Bets</h3>
-    <div class="sub" style="margin-bottom:10px;">Real bets you placed yourself with your own money on Kalshi. Log one against a pick below and this tracks how your own betting actually does -- including whether following a \U0001F525 strong pick beats picking your own from the \U0001F44D thin-edge pool.</div>
-
-    <form method="POST" action="/log_manual_bet" style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px; padding:12px; background:#161b26; border-radius:8px; border:1px solid #2a3348;">
-      <select name="pick_id" required style="background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
-        <option value="" disabled selected>Which pick did you bet?</option>
-        {% for lp in loggable_picks %}
-        <option value="{{ lp.pick_id }}">{{ '\U0001F525' if lp.bet_tier == 'strong' else ('\U0001F44D' if lp.bet_tier == 'thin' else '⚠') }} {{ lp.label }}</option>
-        {% endfor %}
-      </select>
-      <div style="display:flex; gap:8px;">
-        <input type="number" name="stake_dollars" placeholder="Your $ stake" min="1" step="0.01" required style="flex:1; background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
-        <button type="submit" style="background:#238636; color:#fff; border:none; border-radius:6px; padding:8px 16px; font-weight:600; cursor:pointer;">Log bet</button>
-      </div>
-      <input type="text" name="note" placeholder="Optional note" style="background:#0d1117; color:#e6edf3; border:1px solid #2a3348; border-radius:6px; padding:8px;">
-    </form>
-
-    <div class="row" style="margin-bottom:6px;">
-      <span class="label">Overall</span>
-      <span>{{ manual_bet_summary.overall.resolved }}/{{ manual_bet_summary.overall.logged }} resolved{% if manual_bet_summary.overall.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.overall.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.overall.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.overall.pnl) }}</span></span>
-    </div>
-    <div class="row" style="margin-bottom:6px;">
-      <span class="label">\U0001F525 Followed a strong pick</span>
-      <span>{{ manual_bet_summary.followed_recommendation.resolved }}/{{ manual_bet_summary.followed_recommendation.logged }} resolved{% if manual_bet_summary.followed_recommendation.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.followed_recommendation.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.followed_recommendation.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.followed_recommendation.pnl) }}</span></span>
-    </div>
-    <div class="row" style="margin-bottom:10px;">
-      <span class="label">Picked on your own</span>
-      <span>{{ manual_bet_summary.own_choice.resolved }}/{{ manual_bet_summary.own_choice.logged }} resolved{% if manual_bet_summary.own_choice.win_rate is not none %} · {{ "%.0f"|format(manual_bet_summary.own_choice.win_rate) }}% won{% endif %} · <span class="{{ 'green' if manual_bet_summary.own_choice.pnl >= 0 else 'red' }}">${{ "%.2f"|format(manual_bet_summary.own_choice.pnl) }}</span></span>
-    </div>
-
-    {% if manual_bets_list %}
-    {% for m in manual_bets_list %}
-    <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-      <div>
-        <div><strong>{{ m.label }}</strong> <span class="badge">${{ "%.2f"|format(m.stake_dollars) }}</span></div>
-        <div class="sub">{{ m.logged_at }}{% if m.note %} · {{ m.note }}{% endif %}</div>
-      </div>
-      <div class="{{ 'green' if m.status == 'won' else ('red' if m.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-        {% if m.result_pnl is not none %}${{ "%.2f"|format(m.result_pnl) }}{% else %}{{ m.status }}{% endif %}
-      </div>
-    </div>
-    {% endfor %}
-    {% else %}
-    <div class="muted">No manual bets logged yet -- use the form above after you place one.</div>
     {% endif %}
   </div>
 
@@ -1040,23 +1032,16 @@ def dashboard():
 
     parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
 
-    manual_bet_summary = pt.get_manual_bet_summary()
-    pending_tier_counts = pt.get_pending_bet_tier_breakdown()
+    pending_tier_breakdown = pt.get_pending_bet_tier_breakdown()
     auto_manual_positions = sorted(
         worker.load_manual_positions().values(),
         key=lambda m: m.get("resolved_at") or m.get("opened_at") or "",
         reverse=True,
     )
-    manual_bets_list = pt.get_manual_bets_with_status()[:20]
-    loggable_picks = pt.get_loggable_picks()
-
     return render_template_string(
         PAGE_TEMPLATE,
-        manual_bet_summary=manual_bet_summary,
-        pending_tier_counts=pending_tier_counts,
+        pending_tier_breakdown=pending_tier_breakdown,
         auto_manual_positions=auto_manual_positions,
-        manual_bets_list=manual_bets_list,
-        loggable_picks=loggable_picks,
         balance=balance,
         positions=positions,
         trade_log=trade_log,
@@ -1095,24 +1080,6 @@ def dashboard():
         net_pnl=net_pnl,
         parlay_leg_breakdown=parlay_leg_breakdown,
     )
-
-
-@app.route("/log_manual_bet", methods=["POST"])
-def log_manual_bet():
-    """Logs a real bet the user placed themselves against one of the bot's
-    picks, so manual-betting performance can be tracked over time -- never
-    places anything, purely a record."""
-    import paper_trading as pt
-    pick_id = (request.form.get("pick_id") or "").strip()
-    stake_raw = request.form.get("stake_dollars") or "0"
-    note = (request.form.get("note") or "").strip() or None
-    try:
-        stake_dollars = float(stake_raw)
-    except ValueError:
-        stake_dollars = 0.0
-    if pick_id and stake_dollars > 0:
-        pt.record_manual_bet(pick_id, stake_dollars, side_note=note)
-    return redirect("/")
 
 
 @app.route("/allocate", methods=["POST"])
