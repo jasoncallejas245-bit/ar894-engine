@@ -370,20 +370,25 @@ SHARPAPI_FETCH_HEALTH_FILE = os.path.join(DATA_DIR, "sharpapi_fetch_health.json"
 SHARPAPI_FETCH_HEALTH_MAX_ENTRIES = 200
 
 
-def _record_fetch_health(league, pages_fetched, total_rows, complete, reason=None):
+def _record_fetch_health(league, pages_fetched, total_rows, complete, reason=None, kind="odds"):
     """
-    Every fetch_sharpapi_odds call logs one entry here -- not just to
-    console (which nobody reads unless something's already gone wrong),
-    but to a small persisted history so "is the bot's OWN unassisted
-    cycle silently getting incomplete data" can be answered by reading
-    real history instead of guessing or triggering more fetches. When a
-    fetch comes back incomplete, also fires exactly one Discord alert
-    (not one per retry) so this can't go unnoticed.
+    Every fetch_sharpapi_odds (and, as of 2026-09-11, fetch_sharpapi_
+    player_props) call logs one entry here -- not just to console (which
+    nobody reads unless something's already gone wrong), but to a small
+    persisted history so "is the bot's OWN unassisted cycle silently
+    getting incomplete data" can be answered by reading real history
+    instead of guessing or triggering more fetches. When a fetch comes
+    back incomplete, also fires exactly one Discord alert (not one per
+    retry) so this can't go unnoticed.
+
+    `kind` distinguishes odds vs props entries -- props fetches used to
+    be entirely invisible here, which hid the fact that they (not odds)
+    were the bulk of a scan cycle's real wall-clock time.
     """
     try:
         history = safe_read_json(SHARPAPI_FETCH_HEALTH_FILE, [])
         entry = {
-            "league": league, "at": datetime.now(timezone.utc).isoformat(),
+            "league": league, "kind": kind, "at": datetime.now(timezone.utc).isoformat(),
             "pages_fetched": pages_fetched, "total_rows": total_rows,
             "complete": complete, "reason": reason,
         }
@@ -551,6 +556,19 @@ def probe_sharpapi_player_prop_market(league="mlb"):
     atomic_write_json(probe_path, {"league": league, "at": datetime.now().isoformat(), "results": results})
 
 
+# Separate, much lower page cap for player-props pagination. Props
+# fetches were silently reusing SHARPAPI_MAX_PAGES (10 pages, up to
+# 2000 rows) per league with no visibility -- confirmed live
+# (2026-09-11) that full scan cycles were taking 13-15 minutes end to
+# end, vs. an intended ~5 minutes, and the *logged* (odds-only)
+# fetches only accounted for a few minutes of that -- the rest was
+# unlogged props pagination eating the same paced request budget. A
+# single day's player-prop lines don't need anywhere near 2000 rows
+# per league; 3 pages (600 rows) comfortably covers a full slate
+# while cutting the worst-case props pagination time by more than half.
+SHARPAPI_PROPS_MAX_PAGES = int(os.getenv("SHARPAPI_PROPS_MAX_PAGES", "3"))
+
+
 def fetch_sharpapi_player_props(league):
     """
     Player-prop odds for one league from SharpAPI, mirroring
@@ -572,7 +590,7 @@ def fetch_sharpapi_player_props(league):
     all_rows = []
     cursor = None
     logged_sample = False
-    for page_num in range(SHARPAPI_MAX_PAGES):
+    for page_num in range(SHARPAPI_PROPS_MAX_PAGES):
         params = {"league": league, "market": "props", "limit": 200}
         if cursor:
             params["cursor"] = cursor
@@ -586,6 +604,7 @@ def fetch_sharpapi_player_props(league):
         if resp is None or resp.status_code != 200:
             code = resp.status_code if resp is not None else "no response"
             print(f"[sharpapi] {league} player_props failed: {code}")
+            _record_fetch_health(league, page_num, len(all_rows), complete=False, reason=f"HTTP {code}", kind="props")
             return all_rows
         body = resp.json()
         rows = body.get("data", [])
@@ -609,10 +628,13 @@ def fetch_sharpapi_player_props(league):
         all_rows.extend(rows)
         pagination = body.get("pagination", {})
         if not pagination.get("has_more"):
-            break
+            _record_fetch_health(league, page_num + 1, len(all_rows), complete=True, kind="props")
+            return all_rows
         cursor = pagination.get("next_cursor")
         if not cursor:
-            break
+            _record_fetch_health(league, page_num + 1, len(all_rows), complete=False, reason="has_more=true but no next_cursor", kind="props")
+            return all_rows
+    _record_fetch_health(league, SHARPAPI_PROPS_MAX_PAGES, len(all_rows), complete=False, reason=f"hit {SHARPAPI_PROPS_MAX_PAGES}-page props safety cap", kind="props")
     return all_rows
 
 
