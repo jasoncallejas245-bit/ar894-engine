@@ -1336,10 +1336,21 @@ def main():
     last_sports_scan = 0.0
     while True:
         run_sports_scan = (time.time() - last_sports_scan) >= SPORTS_SCAN_INTERVAL_SECONDS
+        # Stamped at the START of a sports scan, not after it finishes.
+        # Confirmed live (2026-09-11): a full sports scan itself takes a
+        # few minutes (SharpAPI rate-limit pacing), and stamping this
+        # AFTER run_once returned meant that scan duration and the next
+        # SPORTS_SCAN_INTERVAL_SECONDS wait stacked back-to-back instead
+        # of overlapping -- observed cycle-to-cycle gaps of ~9 minutes
+        # against a 5-minute SPORTS_SCAN_INTERVAL_SECONDS setting.
+        # Stamping at the start makes the interval clock run WHILE the
+        # scan itself is running, so the next scan is due close to
+        # SPORTS_SCAN_INTERVAL_SECONDS after this one started, not after
+        # it finished.
+        if run_sports_scan:
+            last_sports_scan = time.time()
         try:
             run_once(client, seen_trades, run_sports_scan=run_sports_scan)
-            if run_sports_scan:
-                last_sports_scan = time.time()
         except Exception as e:
             print(f"[loop] error: {e}")
             _record_cycle_status("error", error=e)
