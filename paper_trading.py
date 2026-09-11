@@ -752,6 +752,30 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
         print(f"[paper_trading] check_and_close_moneyline_paper_early error: {e}")
 
 
+def get_pending_bet_tier_breakdown():
+    """
+    How many PENDING (not yet resolved) picks currently sit in each
+    profitability tier -- strong/thin/skip -- across every pick category
+    that tracks a bet_tier. Lets the dashboard show at a glance how many
+    of the open picks are actually worth watching (strong/thin) vs just
+    background data-collection noise (skip), instead of one big pending
+    count that mixes all three together.
+    """
+    paper_data = load_paper_trades()
+    counts = {"strong": 0, "thin": 0, "skip": 0, "untiered": 0}
+    for category in ["moneyline", "passing_yards", "wnba_combined"]:
+        for pick in paper_data.get(category, []):
+            if pick.get("status") != "pending":
+                continue
+            tier = pick.get("bet_tier")
+            if tier in counts:
+                counts[tier] += 1
+            else:
+                counts["untiered"] += 1
+    counts["total_pending"] = counts["strong"] + counts["thin"] + counts["skip"] + counts["untiered"]
+    return counts
+
+
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}

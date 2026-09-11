@@ -84,8 +84,9 @@ def _build_pnl_chart_svg(points, width=560, height=140, labels=None):
             tip = labels[i] if labels and i < len(labels) else "${:+.2f}".format(points[i])
             svg_parts.append(
                 '<circle cx="{x:.1f}" cy="{y:.1f}" r="9" fill="{c}" opacity="0" '
-                'style="cursor:pointer;"><title>{tip}</title></circle>'
-                .format(x=x, y=y, c=line_color, tip=_html.escape(tip))
+                'class="pnl-hit" data-tip="{tip_attr}" style="cursor:pointer;">'
+                '<title>{tip}</title></circle>'
+                .format(x=x, y=y, c=line_color, tip=_html.escape(tip), tip_attr=_html.escape(tip, quote=True))
             )
             svg_parts.append(
                 '<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" fill="{c}" opacity="0" '
@@ -214,6 +215,17 @@ PAGE_TEMPLATE = """
   <div class="card">
     <h3>Profitability Status -- All Strategies</h3>
     <div class="sub" style="margin-bottom:10px;">Crosses BOTH a real sample size ({{ min_sample }}+ resolved picks) and genuine profit before counting as "profitable" here -- same bar the Discord alerts use.</div>
+
+    <div class="row" style="margin-bottom:14px; padding:10px; background:#161b26; border-radius:8px; border:1px solid #2a3348;">
+      <span class="label">Pending picks right now</span>
+      <span>
+        <span class="badge badge-bet">🔥 {{ pending_tier_counts.strong }} strong</span>
+        <span class="badge badge-thin">👍 {{ pending_tier_counts.thin }} thin</span>
+        <span class="badge badge-data">⚠ {{ pending_tier_counts.skip }} skip</span>
+        <span class="muted">({{ pending_tier_counts.total_pending }} total)</span>
+      </span>
+    </div>
+
     {% for p in profitability_status %}
     <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
       <div>
@@ -248,6 +260,18 @@ PAGE_TEMPLATE = """
       <div class="sub">{{ total_resolved_count }} resolved pick{{ '' if total_resolved_count == 1 else 's' }}</div>
     </div>
     {{ chart_svg|safe }}
+    <div id="pnl-tap-tip" class="sub" style="margin-top:8px; min-height:1.2em;">Tap or hover a point on the line to see that pick's $ result.</div>
+    <script>
+      (function() {
+        var box = document.getElementById('pnl-tap-tip');
+        if (!box) return;
+        document.querySelectorAll('.pnl-chart .pnl-hit').forEach(function(el) {
+          el.addEventListener('click', function() {
+            box.textContent = el.getAttribute('data-tip');
+          });
+        });
+      })();
+    </script>
 
     {% if parlay_leg_breakdown %}
     <div style="margin-top:16px;">
@@ -1017,6 +1041,7 @@ def dashboard():
     parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
 
     manual_bet_summary = pt.get_manual_bet_summary()
+    pending_tier_counts = pt.get_pending_bet_tier_breakdown()
     auto_manual_positions = sorted(
         worker.load_manual_positions().values(),
         key=lambda m: m.get("resolved_at") or m.get("opened_at") or "",
@@ -1028,6 +1053,7 @@ def dashboard():
     return render_template_string(
         PAGE_TEMPLATE,
         manual_bet_summary=manual_bet_summary,
+        pending_tier_counts=pending_tier_counts,
         auto_manual_positions=auto_manual_positions,
         manual_bets_list=manual_bets_list,
         loggable_picks=loggable_picks,
