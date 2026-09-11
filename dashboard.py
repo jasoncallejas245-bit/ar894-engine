@@ -224,7 +224,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.strong %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -238,7 +238,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.thin %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -252,7 +252,7 @@ PAGE_TEMPLATE = """
         </summary>
         <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
           {% for row in pending_tier_breakdown.picks.skip %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;">{{ row.label }}</div>
+          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d; display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>
           {% else %}
           <div class="muted">None pending right now.</div>
           {% endfor %}
@@ -371,7 +371,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -409,7 +409,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -488,7 +488,7 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}</div>
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -510,7 +510,7 @@ PAGE_TEMPLATE = """
         <div>
           <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
           <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
-          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}{% if t.get('starts_in') %} · {{ t.starts_in }}{% endif %}</div>
         </div>
         <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
@@ -531,7 +531,7 @@ PAGE_TEMPLATE = """
         <div>
           <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
           <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
-          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}{% if t.get('starts_in') %} · {{ t.starts_in }}{% endif %}</div>
         </div>
         <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
           {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% elif t.status == 'needs_manual_check' %}check manually{% else %}pending{% endif %}
@@ -945,6 +945,41 @@ def dashboard():
     # Nicely format Close Calls' game-start countdown.
     for p in too_close_picks:
         p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
+
+    # Same "is this live or still to come" timing stamped onto every other
+    # bet listing on the dashboard, not just the dedicated Pending Picks
+    # card -- All Recent Picks, Passing Yards, WNBA, and (using the
+    # earliest leg's start time) parlay/prop tickets.
+    for p in all_recent_picks:
+        p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
+    for p in all_passing_yards_picks:
+        p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
+    for p in all_wnba_combined_picks:
+        p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
+
+    def _earliest_leg_start(legs):
+        """Parses each leg's event_start_time and returns the earliest
+        (soonest/most-in-progress) one as an ISO string, so a multi-leg
+        ticket shows one timing label -- whichever leg is furthest along."""
+        parsed = []
+        for leg in (legs or []):
+            ts = leg.get("event_start_time")
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                parsed.append((dt, ts))
+            except Exception:
+                continue
+        if not parsed:
+            return None
+        parsed.sort(key=lambda pair: pair[0])
+        return parsed[0][1]
+
+    for t in all_parlay_tickets:
+        t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
+    for t in all_prop_tickets:
+        t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
 
     # Pending Picks -- every still-open moneyline pick, with when it
     # started/starts and when it resolves, so there's one place to see

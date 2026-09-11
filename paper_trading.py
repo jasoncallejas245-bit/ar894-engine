@@ -752,6 +752,36 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
         print(f"[paper_trading] check_and_close_moneyline_paper_early error: {e}")
 
 
+def format_event_timing(event_start_time):
+    """
+    Shared 'is this live right now or still to come' label for any pick
+    that stores an event_start_time -- 'in progress' once the game should
+    have started, 'starting any moment' right at kickoff, otherwise a
+    countdown ('in 2h 15m'). Mirrors dashboard.py's own _fmt_countdown so
+    every list (pending-tier breakdown, moneyline, passing yards, WNBA,
+    parlay/prop tickets) shows the same wording. Returns None if there's
+    no start time to work with.
+    """
+    if not event_start_time:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+        secs = (dt - now).total_seconds()
+    except Exception:
+        return None
+    if secs <= -600:
+        return "in progress"
+    if secs <= 0:
+        return "starting any moment"
+    if secs < 60:
+        return f"in {int(secs)}s"
+    if secs < 3600:
+        return f"in {int(secs/60)}m"
+    h, m = int(secs // 3600), int((secs % 3600) // 60)
+    return f"in {h}h {m}m"
+
+
 def _pending_pick_label(category, pick):
     if category == "moneyline":
         return f"{pick.get('picked_team', '?')} ({pick.get('league', '?')})"
@@ -783,6 +813,7 @@ def get_pending_bet_tier_breakdown():
             picks_by_tier[tier].append({
                 "label": _pending_pick_label(category, pick),
                 "picked_at": pick.get("picked_at"),
+                "timing": format_event_timing(pick.get("event_start_time")),
             })
 
     for tier in picks_by_tier:
@@ -1000,6 +1031,7 @@ def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
                         "league": leg["league"], "picked_team": leg["picked_team"],
                         "kalshi_ticker": leg["kalshi_ticker"], "event_id": leg.get("event_id"),
                         "entry_price": leg["entry_price"], "edge_pct": leg.get("edge_pct"),
+                        "event_start_time": leg.get("event_start_time"),
                     }
                     for leg in legs
                 ],
@@ -1197,6 +1229,7 @@ def _parse_player_prop_row(row):
             "away_team": row.get("away_team"),
             "home_team": row.get("home_team"),
             "is_alternate_line": bool(row.get("is_alternate_line")),
+            "event_start_time": row.get("event_start_time"),
         }
     except Exception:
         return None
@@ -1239,6 +1272,7 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
                 "consensus_prob": round(avg_prob, 4), "book_count": len(probs),
                 "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
                 "home_team": sample.get("home_team"), "league": league,
+                "event_start_time": sample.get("event_start_time"),
             })
 
         if len(candidates) < PROP_LEG_COUNT:
@@ -1458,6 +1492,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                     "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
                     "home_team": sample.get("home_team"),
                     "is_alternate_line": any(r.get("is_alternate_line") for r in rows),
+                    "event_start_time": sample.get("event_start_time"),
                 }
 
         new_picks = []
@@ -1486,6 +1521,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
                 "away_team": cand.get("away_team"),
                 "home_team": cand.get("home_team"),
                 "entry_price": cand["consensus_prob"],
+                "event_start_time": cand.get("event_start_time"),
                 "picked_at": datetime.now().isoformat(),
                 "status": "pending",
                 "bet_tier": "strong" if cand["consensus_prob"] >= 0.60 else "thin",
@@ -1798,6 +1834,7 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
                     "event_id": sample.get("event_id"), "away_team": sample.get("away_team"),
                     "home_team": sample.get("home_team"),
                     "is_alternate_line": any(r.get("is_alternate_line") for r in rows),
+                    "event_start_time": sample.get("event_start_time"),
                 }
 
         new_picks = []
@@ -1826,6 +1863,7 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
                 "away_team": cand.get("away_team"),
                 "home_team": cand.get("home_team"),
                 "entry_price": cand["consensus_prob"],
+                "event_start_time": cand.get("event_start_time"),
                 "picked_at": datetime.now().isoformat(),
                 "status": "pending",
                 "bet_tier": "strong" if cand["consensus_prob"] >= 0.60 else "thin",
