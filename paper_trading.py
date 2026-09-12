@@ -1219,7 +1219,17 @@ def resolve_parlay_paper_trades(send_discord_fn=None, webhook=None):
 # and getting that wrong would silently grade a pick incorrectly, which
 # is worse than not grading it at all.
 # ---------------------------------------------------------------------------
-PROP_PICKS_ENABLED = os.getenv("PROP_PICKS_PAPER_ENABLED", "true").lower() == "true"
+# Paused 2026-09-12, at the user's request: confirmed live against the
+# real PrizePicks app that its actual lines can differ drastically from
+# the SharpAPI sportsbook-consensus lines this uses as a stand-in (Dante
+# Moore passing yards: SharpAPI said 169.5, real PrizePicks line was
+# 249.5 -- an 80-yard gap). That means every consensus_prob this ever
+# generated for a real PrizePicks line is unreliable -- there's no way to
+# know the real line without PrizePicks' own API, which doesn't exist.
+# Existing historical data stays (still useful for testing the moneyline
+# edge-detection approach itself), just no new picks get made until
+# there's a real way to verify PrizePicks' actual numbers.
+PROP_PICKS_ENABLED = os.getenv("PROP_PICKS_PAPER_ENABLED", "false").lower() == "true"
 # Real PrizePicks Power Plays start at 2 legs (not just 4) -- mirrors
 # PARLAY_LEG_COUNTS below so this actually matches how PrizePicks works,
 # instead of only ever building one fixed 4-leg ticket.
@@ -1434,7 +1444,13 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
 # contract price (moneyline legs) and sportsbook consensus (prop legs) as
 # stand-ins, not PrizePicks' literal numbers.
 # ---------------------------------------------------------------------------
-COMBO_PICKS_ENABLED = os.getenv("COMBO_PICKS_PAPER_ENABLED", "true").lower() == "true"
+# Paused 2026-09-12 along with PROP_PICKS_ENABLED above -- combo tickets
+# mix in prop legs, so they inherit the same "line doesn't match real
+# PrizePicks" problem. Kalshi's own real combo/MVE product is a separate,
+# unrelated thing -- see the MIN_EARLY_EXIT_STAKE_DOLLARS-era comments in
+# worker.py's real trading path for that, this flag is paper-only PrizePicks
+# testing.
+COMBO_PICKS_ENABLED = os.getenv("COMBO_PICKS_PAPER_ENABLED", "false").lower() == "true"
 # Reuses PROP_LEG_COUNTS (2, 3, 4 by default) -- same "starts at 2 legs,
 # never just 1" real PrizePicks constraint applies here too.
 COMBO_LEG_COUNTS = PROP_LEG_COUNTS
@@ -1747,6 +1763,9 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
 # bottlenecked by needing three unrelated players to also qualify the
 # same cycle.
 # ---------------------------------------------------------------------------
+# Paused 2026-09-12, same reasoning as PROP_PICKS_ENABLED above -- this is
+# also a PrizePicks-style stand-in using unverified sportsbook lines.
+PASSING_YARDS_ENABLED = os.getenv("PASSING_YARDS_PAPER_ENABLED", "false").lower() == "true"
 PASSING_YARDS_LEAGUES = {"nfl", "ncaaf"}
 # Was deliberately looser than PROP_MIN_CONSENSUS_PROB for volume (0.52).
 # Raised to match the strong-tier bar (0.60) on 2026-09-11 at the user's
@@ -1768,7 +1787,7 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
     re-pick the same leg every cycle until the game finishes. Never
     raises.
     """
-    if league not in PASSING_YARDS_LEAGUES:
+    if not PASSING_YARDS_ENABLED or league not in PASSING_YARDS_LEAGUES:
         return []
     try:
         parsed = [
@@ -2045,6 +2064,8 @@ def check_profitability_milestones(send_discord_fn=None, webhook=None, real_trad
 # feed never sends anything like that, this just never fires -- same
 # safe-fail behavior as every other unverified field in this codebase.
 # ---------------------------------------------------------------------------
+# Paused 2026-09-12, same reasoning as PROP_PICKS_ENABLED above.
+WNBA_COMBINED_ENABLED = os.getenv("WNBA_COMBINED_PAPER_ENABLED", "false").lower() == "true"
 WNBA_COMBINED_STATS_LEAGUES = {"wnba"}
 # Raised 0.52 -> 0.60 (2026-09-11, at the user's request): only strong-tier
 # (>=60%) picks get generated anywhere now, same reasoning as
@@ -2111,7 +2132,7 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
     paper pick per (player, line) where consensus clears
     WNBA_COMBINED_STAT_MIN_PROB, no all-or-nothing bundling. Never raises.
     """
-    if league not in WNBA_COMBINED_STATS_LEAGUES:
+    if not WNBA_COMBINED_ENABLED or league not in WNBA_COMBINED_STATS_LEAGUES:
         return []
     try:
         parsed = [
