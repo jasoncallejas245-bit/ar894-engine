@@ -482,7 +482,7 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>All Recent Picks</h3>
-    <div class="sub" style="margin-bottom:10px;">Every moneyline pick the bot has made recently, clear favorites and close calls alike, whatever its result. This is the full picture -- if it's not here, it isn't a pick the bot made. <span class="green">🔥 Strong</span> clears the tighter bar real trading uses. <span style="color:#d4a72c;">👍 Thin edge</span> has real detected edge, just under that bar -- still worth a look, smaller size if you take it. <span class="muted">⚠ Skip</span> is a near-zero-edge pick kept only to build up data volume -- not worth your own money. The bar under each pick is the same signal as a % gauge, red to green.</div>
+    <div class="sub" style="margin-bottom:10px;">🔥 Strong picks only -- clears the real-trading bar (60%+). Thin-edge and zero-edge picks are still generated and recorded in the background (the adaptive learning system needs that sample size to keep working), they just aren't shown here anymore. The bar under each pick is the same signal as a % gauge, red to green.</div>
     {% if all_recent_picks %}
       {% for p in all_recent_picks[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
@@ -566,7 +566,7 @@ PAGE_TEMPLATE = """
 
   <div class="card">
     <h3>Pending Picks — Live Countdown</h3>
-    <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves. <span class="green">🔥 Strong</span> = clears the real-trading bar. <span style="color:#d4a72c;">👍 Thin edge</span> = real edge, smaller/optional. <span class="muted">⚠ Skip</span> = no real edge, data only.</div>
+    <div class="sub" style="margin-bottom:10px;">🔥 Strong picks only, currently in play, with when it started and when it resolves. Thin/skip picks are still tracked in the background for the learning system, just not shown here.</div>
     {% if pending_picks %}
       {% for p in pending_picks %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
@@ -828,8 +828,12 @@ def dashboard():
             _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
             _fee = pt._kalshi_taker_fee_dollars_local(_p["entry_price"], _contracts)
             _p["potential_payout"] = round((1.0 - _p["entry_price"]) * _contracts - _fee, 2)
-    too_close_picks = [p for p in all_moneyline_picks if p.get("is_too_close")][-15:][::-1]
-    all_recent_picks = list(reversed(sorted(all_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
+    # Strong-tier only (2026-09-11, at the user's request): thin/skip picks
+    # are still generated and recorded (the adaptive threshold learner
+    # needs that sample size), just no longer shown on the dashboard.
+    _strong_moneyline_picks = [p for p in all_moneyline_picks if p.get("bet_tier") == "strong"]
+    too_close_picks = [p for p in _strong_moneyline_picks if p.get("is_too_close")][-15:][::-1]
+    all_recent_picks = list(reversed(sorted(_strong_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
     all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
@@ -866,7 +870,11 @@ def dashboard():
     # Passing yards -- MAIN FOCUS, at the user's request: its own
     # prominent card near the top of the dashboard (see the template),
     # not buried with the other prop types.
-    all_passing_yards_picks = list(reversed(sorted(pt.load_paper_trades().get("passing_yards", []), key=lambda p: p.get("picked_at") or "")))
+    # Strong-tier only (2026-09-11, at the user's request) -- filters out
+    # any thin-tier picks recorded before PASSING_YARDS_MIN_PROB was
+    # raised to 60%; everything generated from now on is strong already.
+    all_passing_yards_picks = [p for p in pt.load_paper_trades().get("passing_yards", []) if p.get("bet_tier") == "strong"]
+    all_passing_yards_picks = list(reversed(sorted(all_passing_yards_picks, key=lambda p: p.get("picked_at") or "")))
     for _p in all_passing_yards_picks:
         if _p.get("status") == "pending" and (_p.get("entry_price") or 0) > 0:
             _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
@@ -875,7 +883,10 @@ def dashboard():
     passing_yards_summary = summary.get("passing_yards", {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None, "total_picks": 0})
     passing_yards_bank = bankroll.get("passing_yards", {"balance": pt.PAPER_STARTING_BANKROLL})
 
-    all_wnba_combined_picks = list(reversed(sorted(pt.load_paper_trades().get("wnba_combined", []), key=lambda p: p.get("picked_at") or "")))
+    # Strong-tier only (2026-09-11, at the user's request) -- same reasoning
+    # as passing yards above.
+    all_wnba_combined_picks = [p for p in pt.load_paper_trades().get("wnba_combined", []) if p.get("bet_tier") == "strong"]
+    all_wnba_combined_picks = list(reversed(sorted(all_wnba_combined_picks, key=lambda p: p.get("picked_at") or "")))
     for _p in all_wnba_combined_picks:
         if _p.get("status") == "pending" and (_p.get("entry_price") or 0) > 0:
             _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
@@ -1080,6 +1091,13 @@ def dashboard():
     pending_picks = []
     for p in all_moneyline_picks:
         if p.get("status") != "pending":
+            continue
+        # Strong-tier only (2026-09-11, at the user's request): thin-edge
+        # picks are still generated and recorded in the background (the
+        # adaptive threshold learner needs that sample size), just no
+        # longer shown here -- this is "what to actually consider," not
+        # a full data-collection log.
+        if p.get("bet_tier") != "strong":
             continue
         if p.get("source") == "pregame":
             timing_label, timing_value = "Game starts", _fmt_countdown(p.get("event_start_time"))
