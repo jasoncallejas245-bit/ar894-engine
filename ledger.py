@@ -12,7 +12,12 @@ BOT_PNL_FILE = os.path.join(DATA_DIR, "bot_realized_pnl.json")
 # (e.g. 25% of a $15 available budget = $3.75, 25% of $20 = $5), instead of
 # staying stuck at one number regardless of what's actually available.
 STAKE_PERCENT = float(os.getenv("STAKE_PERCENT", "0.25"))
-STAKE_MIN_DOLLARS = float(os.getenv("STAKE_MIN_DOLLARS", "1.00"))
+# Raised from $1.00 to $15.00 (2026-09-11, at the user's request): a real
+# trade below $15 wasn't leaving enough dollar profit on an early exit to
+# be worth the fee/slippage risk. execute_kalshi_buy still re-checks this
+# stake against live available budget and skips the trade entirely (never
+# overdraws) if $15 isn't actually available.
+STAKE_MIN_DOLLARS = float(os.getenv("STAKE_MIN_DOLLARS", "15.00"))
 
 # How much extra account equity beyond (allocated + realized profit) has to
 # show up before we treat it as a genuine new deposit, not rounding noise.

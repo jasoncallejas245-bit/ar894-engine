@@ -32,6 +32,12 @@ DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 DISCORD_WEBHOOK_ERRORS = os.getenv("DISCORD_WEBHOOK_ERRORS", DISCORD_WEBHOOK_UPDATES)
 
 PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
+# Added 2026-09-11, at the user's request: don't take an early profit-target
+# exit on a position whose original stake was under this -- a tiny stake's
+# early-exit dollar profit was too small to be worth it. Below this, the
+# position just rides untouched until reconcile_settled_positions catches
+# its real result at market settlement instead.
+MIN_EARLY_EXIT_STAKE_DOLLARS = float(os.getenv("MIN_EARLY_EXIT_STAKE_DOLLARS", "15.0"))
 MIN_EDGE_PCT = 2.0
 
 import math
@@ -92,7 +98,7 @@ def clears_fee_adjusted_edge(edge_pct, price_dollars, min_edge_pct):
 # real trading (once a league is enabled here) picks up the same lessons
 # paper trading learns. The env var is only the starting point before any
 # adjustment has ever happened.
-FAVORITE_MIN_PROB = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
+FAVORITE_MIN_PROB = float(os.getenv("FAVORITE_MIN_PROB", "0.60"))
 
 
 def get_favorite_min_prob():
@@ -930,6 +936,10 @@ def check_and_close_profitable_positions(client):
         current_bid = float(current_bid)
         gain_pct = ((current_bid - pos["entry_price"]) / pos["entry_price"]) * 100
 
+        stake_dollars = pos["entry_price"] * pos["count_fp"]
+        if stake_dollars < MIN_EARLY_EXIT_STAKE_DOLLARS:
+            continue  # too small to bother taking early -- ride it to settlement instead
+
         if gain_pct >= PROFIT_TARGET_PCT:
             try:
                 price_kwargs = (
@@ -1370,6 +1380,9 @@ def run_once(client, seen_trades, run_sports_scan=True):
         print(f"[props] market probe error: {e}")
 
     cycle_new_picks = []
+    # Collected across every league this cycle, then handed to the combo
+    # builder once the loop finishes -- see paper_trading.maybe_make_combo_pick.
+    cycle_prop_candidates = []
 
     for league in LEAGUE_SERIES.keys():
         try:
@@ -1400,7 +1413,9 @@ def run_once(client, seen_trades, run_sports_scan=True):
             # section docstring).
             if league in pt.PROP_GRADABLE_LEAGUES:
                 prop_rows = fetch_sharpapi_player_props(league)
-                pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
+                _, ranked_props = pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
+                if ranked_props:
+                    cycle_prop_candidates.extend(ranked_props)
                 # Passing yards -- MAIN FOCUS pick type at the user's request,
                 # high volume, independent picks (see paper_trading.py).
                 if league in pt.PASSING_YARDS_LEAGUES:
@@ -1418,6 +1433,11 @@ def run_once(client, seen_trades, run_sports_scan=True):
         pt.maybe_make_parlay_pick(cycle_new_picks, send_discord, DISCORD_WEBHOOK_BETS)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"parlay builder error: {e}")
+
+    try:
+        pt.maybe_make_combo_pick(cycle_new_picks, cycle_prop_candidates, send_discord, DISCORD_WEBHOOK_BETS)
+    except Exception as e:
+        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"combo builder error: {e}")
 
     run_fast_cycle(client)
     _record_cycle_status("finished")
@@ -1438,6 +1458,7 @@ def run_fast_cycle(client):
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
+        pt.resolve_combo_paper_trades(send_discord, None)  # same pattern as parlay/prop resolution above
         pt.resolve_passing_yards_picks(send_discord, None)  # Discord notice off 2026-09-10, consistent with the other resolve calls above -- new picks still post
         pt.resolve_wnba_combined_picks(send_discord, None)  # same pattern as passing yards resolution above
         pt.check_profitability_milestones(

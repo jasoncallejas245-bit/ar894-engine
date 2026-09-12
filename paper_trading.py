@@ -63,6 +63,7 @@ def load_paper_trades():
     data.setdefault("passing_yards", [])
     data.setdefault("manual_bets", [])
     data.setdefault("wnba_combined", [])
+    data.setdefault("combo", [])
     return data
 
 
@@ -345,7 +346,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
     funnel = {
         "distinct_events": len(by_event), "already_picked": 0, "no_two_sided_odds": 0,
         "no_common_book": 0, "no_prob_data": 0, "not_today_or_started": 0,
-        "no_kalshi_match": 0, "no_qualifying_edge": 0, "picked": 0,
+        "no_kalshi_match": 0, "no_qualifying_edge": 0, "zero_edge_skipped": 0, "picked": 0,
     }
 
     for event_id, selections in by_event.items():
@@ -455,6 +456,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             funnel["no_qualifying_edge"] += 1
             continue  # no genuine edge on either side -- skip, don't force a pick
 
+        # Zero/negative-edge picks used to be kept anyway (tagged "skip") as
+        # a wide, data-collection-only net to build sample size. Removed
+        # 2026-09-11 at the user's request -- not useful at this early a
+        # stage, and it was burning context_data API calls on picks nobody
+        # would ever act on. Bail out here, before that lookup.
+        if (best_pick["edge_pct"] or 0.0) <= 0:
+            funnel["zero_edge_skipped"] += 1
+            continue
+
         funnel["picked"] += 1
 
         # "Too close to call" = it cleared the favorite bar but only just --
@@ -483,20 +493,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
                 and best_pick["market_probability"] >= real_favorite_min_prob
             )
 
-        # bet_tier ranks "bang for your buck" instead of a hard yes/no gate.
-        # "skip" is reserved for picks with essentially zero or negative
-        # detected edge (the wide, data-collection-only net lets these
-        # through on purpose to build sample size) -- those are the only
-        # ones actually worth steering away from. Everything with real
-        # positive edge stays visible and ranked, even below the strict
-        # real-trading bar, so nothing useful gets hidden.
+        # bet_tier ranks "bang for your buck" instead of a hard yes/no gate
+        # (the zero/negative-edge case was already filtered out above).
         edge = best_pick["edge_pct"] or 0.0
-        if edge <= 0:
-            bet_tier = "skip"
-        elif manual_bet_candidate:
-            bet_tier = "strong"
-        else:
-            bet_tier = "thin"
+        bet_tier = "strong" if manual_bet_candidate else "thin"
 
         # pick_score: a 0-100 "bang for your buck" gauge for the confidence
         # bar on the dashboard -- continuous, not just the 3-way tier, so
@@ -836,7 +836,7 @@ def get_pending_bet_tier_breakdown():
 def get_paper_trade_summary():
     paper_data = load_paper_trades()
     summary = {}
-    for category in ["moneyline", "parlay", "props", "passing_yards", "wnba_combined"]:
+    for category in ["moneyline", "parlay", "props", "passing_yards", "wnba_combined", "combo"]:
         trades = paper_data[category]
         resolved = [t for t in trades if t["status"] in ("won", "lost")]
         wins = [t for t in resolved if t["status"] == "won"]
@@ -862,7 +862,13 @@ def get_paper_trade_summary():
 MIN_SAMPLE_FOR_ADJUSTMENT = 30
 
 ADAPTIVE_SETTINGS_FILE = os.path.join(DATA_DIR, "adaptive_settings.json")
-MONEYLINE_FAVORITE_MIN_PROB_DEFAULT = float(os.getenv("FAVORITE_MIN_PROB", "0.55"))
+# This is the REAL floor real trading uses (get_favorite_min_prob() in
+# worker.py just delegates to get_effective_favorite_min_prob() below,
+# which reads this default) -- worker.py's own FAVORITE_MIN_PROB constant
+# is unused dead code, don't edit that one and expect it to do anything.
+# Raised 0.55 -> 0.60, 2026-09-11, at the user's request: nothing
+# real-money-adjacent under 60%.
+MONEYLINE_FAVORITE_MIN_PROB_DEFAULT = float(os.getenv("FAVORITE_MIN_PROB", "0.60"))
 # How far above the current favorite bar counts as "close enough that we
 # shouldn't yet trust it" -- e.g. a 0.55 bar with a 0.05 band means picks
 # with fair prob in [0.55, 0.60) get watched as a separate bucket.
@@ -990,6 +996,12 @@ PARLAY_LEG_COUNTS = [int(n) for n in os.getenv("PARLAY_LEG_COUNTS", "2,3,4,5,6")
 # payout value without adding much safety, so it gets skipped in favor of
 # the next-best qualifying leg instead.
 PARLAY_MAX_LEG_PRICE = float(os.getenv("PARLAY_MAX_LEG_PRICE", "0.75"))
+# Added 2026-09-11, at the user's request: a ticket whose legs' combined
+# probability falls below this is too much of a longshot to be worth
+# building at all. Combined Kalshi entry price IS the market's implied
+# combined win probability for the whole ticket (product of each leg's own
+# price), so this is checked directly against that product -- see below.
+PARLAY_MIN_COMBINED_PROB = float(os.getenv("PARLAY_MIN_COMBINED_PROB", "0.30"))
 
 
 def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
@@ -1011,23 +1023,46 @@ def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
     if not PARLAY_ENABLED or not PARLAY_LEG_COUNTS:
         return []
     try:
+        # Strong-tier only (2026-09-11, at the user's request) -- thin-edge
+        # legs no longer get bundled into parlay tickets at all.
         eligible = [
             p for p in candidate_picks
             if p.get("kalshi_ticker") and p.get("entry_price") and p["entry_price"] <= PARLAY_MAX_LEG_PRICE
+            and p.get("bet_tier") == "strong"
         ]
-        eligible.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
+        by_edge = sorted(eligible, key=lambda p: p.get("edge_pct") or 0, reverse=True)
+        # Combined probability is the product of each leg's own entry
+        # price, and that product is maximized by picking the highest-
+        # priced (safest) eligible legs -- so this ordering is the "best
+        # combination" search for combined-probability purposes: if the
+        # best-edge combo comes in under PARLAY_MIN_COMBINED_PROB, retry
+        # with this safer selection instead of just giving up.
+        by_safety = sorted(eligible, key=lambda p: p.get("entry_price") or 0, reverse=True)
 
         tickets = []
         paper_data = load_paper_trades()
         for leg_count in sorted(set(PARLAY_LEG_COUNTS)):
             if len(eligible) < leg_count:
                 continue
-            legs = eligible[:leg_count]
 
-            combined_price = 1.0
-            for leg in legs:
-                combined_price *= leg["entry_price"]
-            combined_price = max(0.0001, combined_price)
+            def _combined(picks):
+                price = 1.0
+                for leg in picks:
+                    price *= leg["entry_price"]
+                return max(0.0001, price)
+
+            legs = by_edge[:leg_count]
+            combined_price = _combined(legs)
+            strategy = "best_edge"
+            if combined_price < PARLAY_MIN_COMBINED_PROB:
+                safer_legs = by_safety[:leg_count]
+                safer_combined = _combined(safer_legs)
+                if safer_combined >= PARLAY_MIN_COMBINED_PROB:
+                    legs, combined_price, strategy = safer_legs, safer_combined, "safety_maximized"
+                else:
+                    # Even the safest possible combo at this leg count can't
+                    # clear the bar -- not worth building, skip this leg count.
+                    continue
 
             contracts = max(1.0, PAPER_STAKE_DOLLARS / combined_price)
             entry_fees = sum(_kalshi_taker_fee_dollars_local(leg["entry_price"], contracts) for leg in legs)
@@ -1045,6 +1080,7 @@ def maybe_make_parlay_pick(candidate_picks, send_discord_fn=None, webhook=None):
                     for leg in legs
                 ],
                 "combined_entry_price": round(combined_price, 6),
+                "leg_selection": strategy,
                 "contracts": contracts,
                 "entry_fees": round(entry_fees, 4),
                 "stake_dollars": round(combined_price * contracts, 4),
@@ -1191,7 +1227,12 @@ PROP_LEG_COUNTS = [int(n) for n in os.getenv("PROP_LEG_COUNTS", "2,3,4").split("
 # Kept as a read-only alias for anything (e.g. older dashboard code) still
 # expecting a single number -- always the largest configured leg count.
 PROP_LEG_COUNT = max(PROP_LEG_COUNTS) if PROP_LEG_COUNTS else 4
-PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.55"))
+# Raised from 0.55 to 0.60 (2026-09-11, at the user's request: nothing
+# real-money-adjacent under 60%) -- this is also exactly the bar
+# get_pending_bet_tier_breakdown uses to call a prop pick "strong", so
+# raising the floor here means every prop candidate generated from now on
+# already qualifies as strong by construction.
+PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.60"))
 # NFL/NCAAF added 2026-09-10, at the user's request (they specifically
 # want passing-yards picks) -- previously excluded over a real concern
 # that ESPN's box score could mix up passing/rushing/receiving yards,
@@ -1203,6 +1244,19 @@ PROP_MIN_CONSENSUS_PROB = float(os.getenv("PROP_MIN_CONSENSUS_PROB", "0.55"))
 # safe-fail approach as everywhere else: wrong guess just means
 # "needs_manual_check," never a wrong grade.
 PROP_GRADABLE_LEAGUES = {"mlb", "nba", "wnba", "nfl", "ncaaf"}
+
+# Added 2026-09-11, at the user's request: was a flat 3x-stake payout
+# regardless of leg count, which isn't how a real Power Play actually pays
+# (more legs = bigger multiplier, since it's a longer shot). These are
+# APPROXIMATE public PrizePicks Power Play numbers (all legs must hit,
+# no partial credit) -- PrizePicks has no API and changes these over
+# time, so treat this as "closer than a flat 3x," not a promise of the
+# real number. Falls back to the flat 3x for any leg count not listed.
+PROP_PAYOUT_MULTIPLIERS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 25.0}
+
+
+def prop_payout_multiplier(leg_count):
+    return PROP_PAYOUT_MULTIPLIERS.get(leg_count, 3.0)
 
 
 def _parse_player_prop_row(row):
@@ -1262,15 +1316,18 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
     actually work in reality (they start at 2 legs, not just 4). Each
     ticket is one leg per player (a ticket reads like a real PrizePicks
     slip -- different players, not the same guy twice), tracked as its
-    own all-or-nothing bet. Returns the list of tickets made this cycle
-    (may be empty). Never raises.
+    own all-or-nothing bet. Returns (tickets, ranked_candidates) -- tickets
+    made this cycle, and the full strong-tier ranked candidate pool this
+    call computed (used by maybe_make_combo_pick to build PrizePicks-style
+    tickets that mix moneyline and prop legs together). Either may be
+    empty. Never raises.
     """
     if not PROP_PICKS_ENABLED or league not in PROP_GRADABLE_LEAGUES or not PROP_LEG_COUNTS:
-        return []
+        return [], []
     try:
         parsed = [p for p in (_parse_player_prop_row(r) for r in prop_rows) if p]
         if not parsed:
-            return []
+            return [], []
 
         groups = {}
         for p in parsed:
@@ -1296,7 +1353,7 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
 
         max_legs = max(PROP_LEG_COUNTS)
         if len(candidates) < min(PROP_LEG_COUNTS):
-            return []
+            return [], []
 
         candidates.sort(key=lambda c: c["consensus_prob"], reverse=True)
         ranked, used_players = [], set()
@@ -1308,7 +1365,7 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
             if len(ranked) == max_legs:
                 break
         if not ranked:
-            return []
+            return [], []
 
         for leg in ranked:
             if not leg.get("event_id"):
@@ -1320,11 +1377,23 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
             if len(ranked) < leg_count:
                 continue
             legs = ranked[:leg_count]
+            # ranked is already sorted by consensus_prob descending, so the
+            # top `leg_count` legs are also the highest-combined-probability
+            # selection available -- no separate "try a safer combo" pass
+            # needed here (unlike moneyline parlays, which rank by edge
+            # first). Still enforce the same floor: not worth a ticket
+            # below this even at the best combo this cycle offers.
+            combined_prob = 1.0
+            for leg in legs:
+                combined_prob *= (leg.get("consensus_prob") or 0.5)
+            if combined_prob < PARLAY_MIN_COMBINED_PROB:
+                continue
             ticket = {
                 "ticket_id": f"prop-{leg_count}leg-{datetime.now().isoformat()}",
                 "league": league,
                 "leg_count": leg_count,
                 "legs": legs,
+                "combined_prob": round(combined_prob, 6),
                 "stake_dollars": PAPER_STAKE_DOLLARS,
                 "picked_at": datetime.now().isoformat(),
                 "status": "pending",
@@ -1347,10 +1416,231 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
                     f"[PAPER PRIZEPICKS-STYLE] New {len(legs)}-leg {league.upper()} ticket:\n{leg_lines}\n"
                     f"(Paper only -- uses sportsbook consensus lines, not PrizePicks' own numbers -- see code comments)"
                 )
-        return tickets
+        return tickets, ranked
     except Exception as e:
         print(f"[paper_trading] maybe_make_prop_pick error: {e}")
+        return [], []
+
+
+# ---------------------------------------------------------------------------
+# PrizePicks-style COMBO picks -- moneyline + player props mixed in one
+# ticket (NEW 2026-09-11, at the user's request/confirmation: PrizePicks
+# now allows combining a moneyline-style selection with player props in
+# the same entry, which is more flexible than props-only). Kalshi itself
+# still never mixes anything -- real moneyline trades stay solo, always
+# (see execute_kalshi_buy / process_league_real_trading). This is a
+# PAPER-ONLY, PrizePicks-only ticket type, same honesty caveat as the
+# props section above: no PrizePicks API, so these use Kalshi's own
+# contract price (moneyline legs) and sportsbook consensus (prop legs) as
+# stand-ins, not PrizePicks' literal numbers.
+# ---------------------------------------------------------------------------
+COMBO_PICKS_ENABLED = os.getenv("COMBO_PICKS_PAPER_ENABLED", "true").lower() == "true"
+# Reuses PROP_LEG_COUNTS (2, 3, 4 by default) -- same "starts at 2 legs,
+# never just 1" real PrizePicks constraint applies here too.
+COMBO_LEG_COUNTS = PROP_LEG_COUNTS
+
+
+def maybe_make_combo_pick(candidate_picks, prop_candidates, send_discord_fn=None, webhook=None):
+    """
+    Runs once per cycle in worker.py, after the per-league loop, fed that
+    cycle's strong-tier moneyline picks (candidate_picks, same pool
+    maybe_make_parlay_pick uses) and strong-tier prop candidates
+    (prop_candidates, accumulated across every gradable league via
+    maybe_make_prop_pick's second return value). Pools both leg types
+    together, ranked by each leg's own hit probability (moneyline: Kalshi
+    entry price; prop: sportsbook consensus), and builds one all-or-nothing
+    ticket per leg count in COMBO_LEG_COUNTS from the top of that pool --
+    same combined-probability floor as parlay/props (PARLAY_MIN_COMBINED_PROB).
+    Never raises.
+    """
+    if not COMBO_PICKS_ENABLED or not COMBO_LEG_COUNTS:
         return []
+    try:
+        moneyline_eligible = [
+            p for p in candidate_picks
+            if p.get("kalshi_ticker") and p.get("entry_price") and p.get("bet_tier") == "strong"
+        ]
+        pool = [
+            {
+                "leg_type": "moneyline", "probability": leg["entry_price"],
+                "league": leg["league"], "picked_team": leg["picked_team"],
+                "kalshi_ticker": leg["kalshi_ticker"], "event_id": leg.get("event_id"),
+                "entry_price": leg["entry_price"], "edge_pct": leg.get("edge_pct"),
+                "event_start_time": leg.get("event_start_time"),
+                "dedup_key": ("moneyline", leg["kalshi_ticker"]),
+            }
+            for leg in moneyline_eligible
+        ] + [
+            {
+                "leg_type": "prop", "probability": leg.get("consensus_prob") or 0.5,
+                "league": leg["league"], "player": leg["player"], "stat_type": leg["stat_type"],
+                "line": leg["line"], "side": leg["side"], "consensus_prob": leg.get("consensus_prob"),
+                "event_id": leg.get("event_id"), "away_team": leg.get("away_team"),
+                "home_team": leg.get("home_team"), "event_start_time": leg.get("event_start_time"),
+                "dedup_key": ("prop", leg["player"]),
+            }
+            for leg in prop_candidates
+        ]
+        if not pool:
+            return []
+
+        pool.sort(key=lambda l: l["probability"], reverse=True)
+        ranked, used = [], set()
+        max_legs = max(COMBO_LEG_COUNTS)
+        for leg in pool:
+            if leg["dedup_key"] in used:
+                continue  # never the same game/player twice on one ticket
+            ranked.append(leg)
+            used.add(leg["dedup_key"])
+            if len(ranked) == max_legs:
+                break
+        if len(ranked) < min(COMBO_LEG_COUNTS):
+            return []
+
+        for leg in ranked:
+            if leg["leg_type"] == "prop" and not leg.get("event_id"):
+                leg["event_id"] = context_data.get_event_id_for_matchup(leg["league"], leg.get("away_team"), leg.get("home_team"))
+
+        paper_data = load_paper_trades()
+        tickets = []
+        for leg_count in sorted(set(COMBO_LEG_COUNTS)):
+            if len(ranked) < leg_count:
+                continue
+            legs = ranked[:leg_count]
+            combined_prob = 1.0
+            for leg in legs:
+                combined_prob *= leg["probability"]
+            if combined_prob < PARLAY_MIN_COMBINED_PROB:
+                continue
+            ticket = {
+                "ticket_id": f"combo-{leg_count}leg-{datetime.now().isoformat()}",
+                "leg_count": leg_count,
+                "legs": legs,
+                "combined_prob": round(combined_prob, 6),
+                "stake_dollars": PAPER_STAKE_DOLLARS,
+                "picked_at": datetime.now().isoformat(),
+                "status": "pending",
+            }
+            paper_data.setdefault("combo", []).append(ticket)
+            tickets.append(ticket)
+
+        if tickets:
+            save_paper_trades(paper_data)
+
+        if send_discord_fn and webhook:
+            for ticket in tickets:
+                leg_lines = "\n".join(
+                    (f"  - [ML] {l['picked_team']} ({l['league']}) ({l['entry_price']*100:.0f}%)" if l["leg_type"] == "moneyline"
+                     else f"  - [PROP] {l['player']} {l['side'].upper()} {l['line']} {l['stat_type']} ({l['consensus_prob']*100:.0f}%)")
+                    for l in ticket["legs"]
+                )
+                send_discord_fn(
+                    webhook,
+                    f"[PAPER PRIZEPICKS COMBO] New {ticket['leg_count']}-leg ticket "
+                    f"({ticket['combined_prob']*100:.0f}% combined):\n{leg_lines}\n"
+                    f"(Paper only -- moneyline+prop mixing, not yet real money)"
+                )
+        return tickets
+    except Exception as e:
+        print(f"[paper_trading] maybe_make_combo_pick error: {e}")
+        return []
+
+
+def resolve_combo_paper_trades(send_discord_fn=None, webhook=None):
+    """
+    Checks each pending combo ticket's legs -- moneyline legs against that
+    same cycle's already-resolved single-position moneyline picks (same
+    approach as resolve_parlay_paper_trades), prop legs against real
+    final box-score stats (same approach as resolve_prop_paper_trades).
+    All-or-nothing: every leg has to hit. Never raises.
+    """
+    try:
+        paper_data = load_paper_trades()
+        moneyline_by_ticker = {p.get("kalshi_ticker"): p for p in paper_data.get("moneyline", []) if p.get("kalshi_ticker")}
+        changed = False
+
+        for ticket in paper_data.get("combo", []):
+            if ticket["status"] != "pending":
+                continue
+
+            any_confirmed_miss = False
+            any_ungradable = False
+            any_still_pending = False
+
+            for leg in ticket["legs"]:
+                if leg["leg_type"] == "moneyline":
+                    underlying = moneyline_by_ticker.get(leg["kalshi_ticker"])
+                    if underlying is None:
+                        any_ungradable = True
+                    elif underlying["status"] == "pending":
+                        any_still_pending = True
+                    elif underlying["status"] == "won":
+                        leg["hit"] = True
+                    else:
+                        leg["hit"] = False
+                        any_confirmed_miss = True
+                else:  # prop
+                    event_id = leg.get("event_id")
+                    league = leg["league"]
+                    if not event_id or not context_data.is_game_final(league, event_id):
+                        any_ungradable = True
+                        continue
+                    value, found = context_data.get_player_boxscore_stat(league, event_id, leg["player"], leg["stat_type"])
+                    if not found:
+                        any_ungradable = True
+                        continue
+                    hit = (value > leg["line"]) if leg["side"] == "over" else (value < leg["line"])
+                    leg["actual_value"] = value
+                    leg["hit"] = hit
+                    if hit:
+                        pass
+                    else:
+                        any_confirmed_miss = True
+
+            if any_confirmed_miss:
+                ticket["status"] = "lost"
+            elif any_still_pending:
+                continue  # still waiting on at least one moneyline leg
+            elif any_ungradable:
+                all_final_or_resolved = all(
+                    (leg["leg_type"] == "moneyline" and moneyline_by_ticker.get(leg["kalshi_ticker"]) and moneyline_by_ticker[leg["kalshi_ticker"]]["status"] != "pending")
+                    or (leg["leg_type"] == "prop" and leg.get("event_id") and context_data.is_game_final(leg["league"], leg["event_id"]))
+                    for leg in ticket["legs"]
+                )
+                if all_final_or_resolved:
+                    ticket["status"] = "needs_manual_check"
+                else:
+                    continue
+            else:
+                ticket["status"] = "won"
+
+            ticket["resolved_at"] = datetime.now().isoformat()
+            changed = True
+
+            if ticket["status"] in ("won", "lost"):
+                multiplier = prop_payout_multiplier(len(ticket["legs"]))
+                pnl = ticket["stake_dollars"] * multiplier if ticket["status"] == "won" else -ticket["stake_dollars"]
+                ticket["hypothetical_pnl"] = round(pnl, 2)
+                balance, is_down, down_by = record_paper_bankroll_change(
+                    "combo", pnl, ticket["ticket_id"], note=f"{len(ticket['legs'])}-leg combo ticket {ticket['status']}",
+                )
+                if send_discord_fn and webhook:
+                    send_discord_fn(
+                        webhook,
+                        f"[COMBO {'HIT' if ticket['status']=='won' else 'BUSTED'}] "
+                        f"{len(ticket['legs'])}-leg ticket: ${pnl:+.2f}. Combo paper bankroll: ${balance:.2f}",
+                    )
+            elif send_discord_fn and webhook:
+                send_discord_fn(
+                    webhook,
+                    f"[COMBO] {len(ticket['legs'])}-leg ticket needs a manual check -- "
+                    f"couldn't auto-grade every leg.",
+                )
+
+        if changed:
+            save_paper_trades(paper_data)
+    except Exception as e:
+        print(f"[paper_trading] resolve_combo_paper_trades error: {e}")
 
 
 def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
@@ -1415,12 +1705,14 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
             changed = True
 
             if ticket["status"] in ("won", "lost"):
-                pnl = ticket["stake_dollars"] * 3 if ticket["status"] == "won" else -ticket["stake_dollars"]
+                multiplier = prop_payout_multiplier(len(ticket["legs"]))
+                pnl = ticket["stake_dollars"] * multiplier if ticket["status"] == "won" else -ticket["stake_dollars"]
                 ticket["hypothetical_pnl"] = round(pnl, 2)
-                # NOTE: the 3x payout above is a rough stand-in for a
-                # real PrizePicks-style payout multiplier (varies by
-                # leg count and pick type in real life) -- good enough
-                # to track "up or down," not a promise of the real payout.
+                # Multiplier scales with leg count now (see
+                # PROP_PAYOUT_MULTIPLIERS) instead of a flat 3x regardless of
+                # size -- still an approximation of PrizePicks' real payout
+                # table (no public API to confirm exact numbers), just a
+                # closer one than treating every leg count the same.
                 balance, is_down, down_by = record_paper_bankroll_change(
                     "props", pnl, ticket["ticket_id"], note=f"{len(ticket['legs'])}-leg prop ticket {ticket['status']}",
                 )
@@ -1456,11 +1748,12 @@ def resolve_prop_paper_trades(send_discord_fn=None, webhook=None):
 # same cycle.
 # ---------------------------------------------------------------------------
 PASSING_YARDS_LEAGUES = {"nfl", "ncaaf"}
-# Deliberately looser than PROP_MIN_CONSENSUS_PROB (0.55) -- the user
-# wants volume here specifically, so this only filters out picks with
-# no real lean at all, not picks that are merely less than 55% sure.
-# Still real sportsbook-consensus edge, never a coinflip guess.
-PASSING_YARDS_MIN_PROB = float(os.getenv("PASSING_YARDS_MIN_PROB", "0.52"))
+# Was deliberately looser than PROP_MIN_CONSENSUS_PROB for volume (0.52).
+# Raised to match the strong-tier bar (0.60) on 2026-09-11 at the user's
+# more recent, explicit "only strong bets" request -- this reverses that
+# earlier volume-over-selectivity choice. Every passing-yards pick
+# generated from now on is "strong" by construction, same as other props.
+PASSING_YARDS_MIN_PROB = float(os.getenv("PASSING_YARDS_MIN_PROB", "0.60"))
 
 
 def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webhook=None):
@@ -1753,7 +2046,10 @@ def check_profitability_milestones(send_discord_fn=None, webhook=None, real_trad
 # safe-fail behavior as every other unverified field in this codebase.
 # ---------------------------------------------------------------------------
 WNBA_COMBINED_STATS_LEAGUES = {"wnba"}
-WNBA_COMBINED_STAT_MIN_PROB = float(os.getenv("WNBA_COMBINED_STAT_MIN_PROB", "0.52"))
+# Raised 0.52 -> 0.60 (2026-09-11, at the user's request): only strong-tier
+# (>=60%) picks get generated anywhere now, same reasoning as
+# PASSING_YARDS_MIN_PROB above.
+WNBA_COMBINED_STAT_MIN_PROB = float(os.getenv("WNBA_COMBINED_STAT_MIN_PROB", "0.60"))
 
 # Every abbreviation/spelling for each component stat that a sportsbook
 # feed might use, checked token-by-token (not a raw substring search --

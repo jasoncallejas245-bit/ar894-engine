@@ -544,6 +544,27 @@ PAGE_TEMPLATE = """
   </div>
 
   <div class="card">
+    <h3>All Combo Tickets (Moneyline + Props)</h3>
+    <div class="sub" style="margin-bottom:10px;">PrizePicks-style tickets mixing a moneyline pick with player props in one entry. Paper-only, same consensus-line caveat as props above.</div>
+    {% if all_combo_tickets %}
+      {% for t in all_combo_tickets[:15] %}
+      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
+        <div>
+          <div><strong>{{ t.legs|length }}-leg combo ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
+          <div class="sub">{% for l in t.legs %}{% if l.leg_type == 'moneyline' %}[ML] {{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% else %}[PROP] {{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+        </div>
+        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
+          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% elif t.status == 'needs_manual_check' %}check manually{% else %}pending{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No combo tickets yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h3>Pending Picks — Live Countdown</h3>
     <div class="sub" style="margin-bottom:10px;">Everything currently in play, with when it started and when it resolves. <span class="green">🔥 Strong</span> = clears the real-trading bar. <span style="color:#d4a72c;">👍 Thin edge</span> = real edge, smaller/optional. <span class="muted">⚠ Skip</span> = no real edge, data only.</div>
     {% if pending_picks %}
@@ -686,6 +707,7 @@ def dashboard():
     ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
     parlay_bank = bankroll.get("parlay", {"balance": pt.PAPER_STARTING_BANKROLL})
     props_bank = bankroll.get("props", {"balance": pt.PAPER_STARTING_BANKROLL})
+    combo_bank = bankroll.get("combo", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
     min_sample = pt.MIN_SAMPLE_FOR_ADJUSTMENT
 
@@ -777,6 +799,27 @@ def dashboard():
             "sample": min(summary.get("props", {}).get("resolved", 0), min_sample),
             "note": "Uses sportsbook consensus lines, not PrizePicks' own exact numbers -- PrizePicks has no public API. Only MLB/NBA/WNBA get auto-graded against real box scores (NBA/WNBA unverified); a ticket that can't be confirmed either way shows as \"needs manual check\" instead of a guess.",
         },
+        {
+            "key": "combo", "label": "PrizePicks Combo: Moneyline + Props (Experimental, Paper-Only)",
+            "summary": summary.get("combo", {"resolved": 0, "win_rate": None}),
+            "bankroll_balance": combo_bank["balance"],
+            "bankroll_down": combo_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
+            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - combo_bank["balance"]),
+            "settings": [
+                {
+                    "label": "Leg-count combos tried",
+                    "value": ", ".join(str(n) for n in sorted(set(pt.COMBO_LEG_COUNTS))),
+                    "explanation": "Mixes strong-tier moneyline picks and strong-tier player props into one ticket, ranked by each leg's own hit probability -- matches PrizePicks now allowing moneyline+prop combos in one entry.",
+                },
+                {
+                    "label": "Minimum combined probability",
+                    "value": f"{pt.PARLAY_MIN_COMBINED_PROB*100:.0f}%",
+                    "explanation": "A ticket whose legs' combined win probability falls below this isn't built at all -- too much of a longshot to be worth it.",
+                },
+            ],
+            "sample": min(summary.get("combo", {}).get("resolved", 0), min_sample),
+            "note": "Kalshi never mixes anything -- real trades stay solo, always. This is a paper-only, PrizePicks-only ticket type, same sportsbook-consensus-lines caveat as the props card above.",
+        },
     ]
 
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
@@ -790,6 +833,7 @@ def dashboard():
 
     all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
+    all_combo_tickets = list(reversed(sorted(pt.load_paper_trades().get("combo", []), key=lambda t: t.get("picked_at") or "")))
 
     # Combined "whole slip" hit probability -- parlay already tracks
     # combined_entry_price (product of each leg's Kalshi contract price,
@@ -801,15 +845,23 @@ def dashboard():
         if _t.get("status") == "pending" and _t.get("contracts") and _t.get("combined_entry_price") is not None:
             _t["potential_payout"] = round((1.0 - _t["combined_entry_price"]) * _t["contracts"] - (_t.get("entry_fees") or 0), 2)
     for _t in all_prop_tickets:
-        _cp = 1.0
-        for _l in _t.get("legs", []):
-            _cp *= (_l.get("consensus_prob") or 0.5)
+        _cp = _t.get("combined_prob")
+        if _cp is None:
+            _cp = 1.0
+            for _l in _t.get("legs", []):
+                _cp *= (_l.get("consensus_prob") or 0.5)
         _t["combined_prob"] = _cp
         if _t.get("status") == "pending":
-            # Flat 3x-stake stand-in payout -- same rough multiplier
-            # resolve_prop_paper_trades actually pays out, see its own
-            # comment for why this isn't a real PrizePicks-accurate number.
-            _t["potential_payout"] = round((_t.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS) * 3, 2)
+            # Leg-count-scaled multiplier (see pt.prop_payout_multiplier) --
+            # same approximate PrizePicks-style table resolve_prop_paper_trades
+            # actually pays out with, not a flat 3x regardless of size.
+            _multiplier = pt.prop_payout_multiplier(len(_t.get("legs", [])))
+            _t["potential_payout"] = round((_t.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS) * _multiplier, 2)
+    for _t in all_combo_tickets:
+        # combined_prob already stored at build time (see maybe_make_combo_pick).
+        if _t.get("status") == "pending":
+            _multiplier = pt.prop_payout_multiplier(len(_t.get("legs", [])))
+            _t["potential_payout"] = round((_t.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS) * _multiplier, 2)
 
     # Passing yards -- MAIN FOCUS, at the user's request: its own
     # prominent card near the top of the dashboard (see the template),
@@ -980,6 +1032,8 @@ def dashboard():
         t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
     for t in all_prop_tickets:
         t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
+    for t in all_combo_tickets:
+        t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
 
     # Cross-reference every parlay/props ticket back to the individual
     # picks that make it up, so a pick shown on its own elsewhere (All
@@ -1048,6 +1102,10 @@ def dashboard():
             "pick_score": p.get("pick_score") or 0,
             "potential_payout": _payout,
         })
+    # Ordered best-to-worst by pick_score (2026-09-11, at the user's
+    # request) -- was in recency order before, which buried the strongest
+    # live picks under whatever fired most recently.
+    pending_picks.sort(key=lambda p: p.get("pick_score") or 0, reverse=True)
 
     activity = {
         "status_text": status_text,
@@ -1143,6 +1201,7 @@ def dashboard():
         all_recent_picks=all_recent_picks,
         all_parlay_tickets=all_parlay_tickets,
         all_prop_tickets=all_prop_tickets,
+        all_combo_tickets=all_combo_tickets,
         all_passing_yards_picks=all_passing_yards_picks,
         passing_yards_summary=passing_yards_summary,
         all_wnba_combined_picks=all_wnba_combined_picks,
