@@ -231,3 +231,176 @@ def try_execute_real_combo(client, real_trading_leagues, send_discord_fn, webhoo
     except Exception as e:
         print(f"[combo] try_execute_real_combo error: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Paper/dry-run combo trading (NEW 2026-09-13, at the user's request: every
+# other strategy in this bot gets paper-tested before real money is ever
+# risked on it -- the real combo trading above didn't, which was a real gap
+# against this project's own pattern. Closed here.
+#
+# This uses the REAL Kalshi combo market + RFQ system to get a genuine live
+# quote -- create_market/create_rfq never move money or place an order, so
+# this is exactly as safe as reading a price. It just stops short of the
+# final place_order step and records the result as a paper position
+# instead. Runs regardless of COMBO_REAL_TRADING_ENABLED or
+# REAL_TRADING_LEAGUES -- paper trading exists specifically to validate a
+# strategy BEFORE real trading starts, so it shouldn't be gated behind the
+# same switches that gate real money.
+#
+# Side benefit: every dry-run cycle also passively gathers evidence on the
+# open "can a combo be exited early via a sell-side RFQ" question, by
+# recording whenever yes_bid_dollars is ever seen above 0 during the watch
+# window (a live buy-back quote, not just a sell-to-you ask). No separate
+# test setup needed for that -- it accumulates on its own as this runs.
+# ---------------------------------------------------------------------------
+
+PAPER_COMBO_ENABLED = os.getenv("COMBO_PAPER_ENABLED", "true").lower() == "true"
+
+
+def _select_combo_legs_paper():
+    """
+    Same idea as _select_combo_legs, but NOT gated on REAL_TRADING_LEAGUES
+    -- paper testing should work for any strong-tier pick regardless of
+    whether real trading is on for that league yet, since the whole point
+    is validating the strategy before real money is involved.
+    """
+    data = pt.load_paper_trades()
+    candidates = [
+        p for p in data.get("moneyline", [])
+        if p.get("status") == "pending" and p.get("bet_tier") == "strong" and p.get("kalshi_ticker")
+    ]
+    candidates.sort(key=lambda p: p.get("market_probability") or 0, reverse=True)
+    legs = candidates[:COMBO_MAX_LEGS]
+    if len(legs) < COMBO_MIN_LEGS:
+        return []
+    return legs
+
+
+def try_paper_combo_dry_run(client, send_discord_fn=None, webhook=None):
+    """
+    Runs once per cycle when enabled. Picks the best qualifying strong-tier
+    legs (same selection as the real version), gets/creates the real combo
+    market, submits a real RFQ, and watches briefly for a live quote --
+    exactly like try_execute_real_combo, but records whatever quote (or
+    lack of one) it sees as a paper ticket instead of buying anything.
+    Never raises. Returns the ticket dict, or None if disabled, too few
+    legs, or the RFQ/market calls themselves fail.
+    """
+    if not PAPER_COMBO_ENABLED:
+        return None
+    try:
+        legs = _select_combo_legs_paper()
+        if not legs:
+            return None
+
+        combined_prob = 1.0
+        for leg in legs:
+            combined_prob *= leg["market_probability"]
+
+        selected_markets = [
+            {
+                "market_ticker": leg["kalshi_ticker"],
+                "event_ticker": _event_ticker_from_market_ticker(leg["kalshi_ticker"]),
+                "side": "yes",
+            }
+            for leg in legs
+        ]
+
+        collection = client.get_mve_collection(COMBO_COLLECTION_TICKER)
+        combo_ticker = None
+        try:
+            found = collection.lookup_ticker(selected_markets)
+            combo_ticker = found.get("market_ticker") or found.get("ticker")
+        except Exception:
+            combo_ticker = None
+        if not combo_ticker:
+            market = collection.create_market(selected_markets)
+            combo_ticker = market.ticker
+
+        client.communications.create_rfq(
+            market_ticker=combo_ticker,
+            target_cost_dollars=f"{COMBO_STAKE_DOLLARS:.2f}",
+        )
+
+        deadline = time.time() + COMBO_RFQ_WATCH_SECONDS
+        quote_seen = None
+        bid_ever_seen = False
+        best_bid_seen = 0.0
+        while time.time() < deadline:
+            time.sleep(COMBO_RFQ_POLL_INTERVAL_SECONDS)
+            try:
+                market = client.get_market(combo_ticker)
+            except Exception:
+                continue
+            ask = getattr(market, "yes_ask_dollars", None)
+            bid = getattr(market, "yes_bid_dollars", None)
+            if bid is not None and float(bid) > 0:
+                bid_ever_seen = True
+                best_bid_seen = max(best_bid_seen, float(bid))
+            if ask is not None and 0 < float(ask) < 1.0 and quote_seen is None:
+                quote_seen = float(ask)
+
+        data = pt.load_paper_trades()
+        data.setdefault("combo_dryrun", [])
+        ticket = {
+            "ticket_id": f"combo-dryrun-{datetime.now().isoformat()}",
+            "combo_ticker": combo_ticker,
+            "legs": [l["picked_team"] for l in legs],
+            "leg_tickers": [l["kalshi_ticker"] for l in legs],
+            "true_combined_prob": round(combined_prob, 4),
+            "quote_seen": quote_seen,
+            "bid_ever_seen": bid_ever_seen,  # evidence toward the early-exit question
+            "best_bid_seen": round(best_bid_seen, 4) if bid_ever_seen else None,
+            "stake_dollars": COMBO_STAKE_DOLLARS,
+            "picked_at": datetime.now().isoformat(),
+            "status": "pending" if quote_seen else "no_quote",
+        }
+        data["combo_dryrun"].append(ticket)
+        pt.save_paper_trades(data)
+
+        if send_discord_fn and webhook and quote_seen:
+            send_discord_fn(
+                webhook,
+                f"[PAPER COMBO] {len(legs)}-leg dry-run quote: ${quote_seen:.4f} "
+                f"({', '.join(l['picked_team'] for l in legs)}), true combined prob {combined_prob*100:.1f}%"
+                + (f" -- also saw a live BID of ${best_bid_seen:.4f} (early-exit evidence!)" if bid_ever_seen else "")
+            )
+        return ticket
+    except Exception as e:
+        print(f"[combo] try_paper_combo_dry_run error: {e}")
+        return None
+
+
+def resolve_paper_combo_dryrun():
+    """
+    Checks pending paper combo dry-run tickets against each leg's own
+    already-resolved moneyline status (same all-or-nothing logic the old
+    parlay resolver used) -- more reliable than re-querying the combo
+    market itself later, since that market's live pricing is ephemeral by
+    nature. Never raises.
+    """
+    try:
+        data = pt.load_paper_trades()
+        moneyline_by_ticker = {p.get("kalshi_ticker"): p for p in data.get("moneyline", []) if p.get("kalshi_ticker")}
+        changed = False
+        for t in data.get("combo_dryrun", []):
+            if t["status"] != "pending":
+                continue
+            statuses = [moneyline_by_ticker.get(tk, {}).get("status") for tk in t.get("leg_tickers", [])]
+            if any(s is None for s in statuses):
+                continue  # a leg's underlying pick vanished -- can't resolve
+            if any(s == "pending" for s in statuses):
+                continue  # still waiting on at least one leg
+            won = all(s == "won" for s in statuses)
+            t["status"] = "won" if won else "lost"
+            t["resolved_at"] = datetime.now().isoformat()
+            if t.get("quote_seen"):
+                price = t["quote_seen"]
+                contracts = max(1.0, t["stake_dollars"] / price)
+                t["hypothetical_pnl"] = round((1.0 - price) * contracts, 2) if won else round(-t["stake_dollars"], 2)
+            changed = True
+        if changed:
+            pt.save_paper_trades(data)
+    except Exception as e:
+        print(f"[combo] resolve_paper_combo_dryrun error: {e}")

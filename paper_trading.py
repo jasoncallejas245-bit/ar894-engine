@@ -64,6 +64,7 @@ def load_paper_trades():
     data.setdefault("manual_bets", [])
     data.setdefault("wnba_combined", [])
     data.setdefault("combo", [])
+    data.setdefault("combo_dryrun", [])
     return data
 
 

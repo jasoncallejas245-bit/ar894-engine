@@ -1380,7 +1380,11 @@ def run_once(client, seen_trades, run_sports_scan=True):
     _record_cycle_status("started", run_sports_scan=run_sports_scan)
     check_and_close_profitable_positions(client)
     reconcile_settled_positions(client)
-    sync_manual_positions(client)
+    # sync_manual_positions(client) call removed 2026-09-13, at the user's
+    # request -- their actual manual trading differs a lot from this bot's
+    # strategy, and tracking it was cross-contaminating the bot's own
+    # stats/dashboard with unrelated activity. The function and
+    # manual_positions.json handling stay in the code, just not called.
 
     if not run_sports_scan:
         run_fast_cycle(client)
@@ -1485,6 +1489,14 @@ def run_once(client, seen_trades, run_sports_scan=True):
         except Exception as e:
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"combo trading error: {e}")
 
+    # Paper/dry-run combo trading -- runs regardless of REAL_TRADING_LEAGUES
+    # or COMBO_REAL_TRADING_ENABLED, same as every other paper strategy
+    # here validating before real money. See combo_trading.py.
+    try:
+        combo_trading.try_paper_combo_dry_run(client, send_discord, DISCORD_WEBHOOK_BETS)
+    except Exception as e:
+        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"paper combo dry-run error: {e}")
+
     run_fast_cycle(client)
     _record_cycle_status("finished")
 
@@ -1502,6 +1514,7 @@ def run_fast_cycle(client):
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_combo_paper_trades(send_discord, None)  # same pattern as parlay/prop resolution above
+        combo_trading.resolve_paper_combo_dryrun()
         pt.resolve_passing_yards_picks(send_discord, None)  # Discord notice off 2026-09-10, consistent with the other resolve calls above -- new picks still post
         pt.resolve_wnba_combined_picks(send_discord, None)  # same pattern as passing yards resolution above
         pt.check_profitability_milestones(
@@ -1511,10 +1524,13 @@ def run_fast_cycle(client):
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"fast-cycle error: {e}")
 
-    try:
-        ledger.check_for_new_deposit(client, send_discord, None, "https://ar894-engine-production.up.railway.app")  # Discord notice off 2026-09-10 at user's request
-    except Exception as e:
-        print(f"[ledger] deposit check error: {e}")
+    # check_for_new_deposit() call removed 2026-09-13, at the user's request
+    # -- their real manual trading (unrelated to this bot's strategy) flows
+    # through the same Kalshi account balance, so a manual win kept getting
+    # mistaken for "new deposit" (this only ever produced an informational
+    # notification anyway -- get_available_budget already caps bot spending
+    # at total_allocated regardless, so removing this doesn't change how
+    # much money the bot can actually use). Function stays in ledger.py.
 
     try:
         pt.maybe_adjust_moneyline_favorite_threshold(send_discord, None)  # Discord notice off 2026-09-10 at user's request
