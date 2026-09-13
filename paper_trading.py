@@ -442,12 +442,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         except Exception as e:
             print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
 
+        # Edge requirement dropped 2026-09-14, at the user's explicit
+        # request/confirmation -- "strong" now means ONLY the favorite
+        # threshold (market_probability >= real_favorite_min_prob), not a
+        # detected Kalshi-vs-consensus mispricing anymore. real_min_edge_pct
+        # is kept as a parameter (still passed in) but no longer checked
+        # here, so it's inert -- do not assume it still gates anything.
         manual_bet_candidate = None
-        if real_min_edge_pct is not None and real_favorite_min_prob is not None:
-            manual_bet_candidate = (
-                _clears_fee_adjusted_edge_local(best_pick["edge_pct"], best_pick["entry_price"], real_min_edge_pct)
-                and best_pick["market_probability"] >= real_favorite_min_prob
-            )
+        if real_favorite_min_prob is not None:
+            manual_bet_candidate = best_pick["market_probability"] >= real_favorite_min_prob
 
         # bet_tier ranks "bang for your buck" instead of a hard yes/no gate
         # (the zero/negative-edge case was already filtered out above).
