@@ -37,6 +37,19 @@ import ledger
 #     mechanism (it prices in a guaranteed-availability margin). The RFQ
 #     path can beat it when a market maker actively wants the flow, but
 #     isn't guaranteed to produce a quote at all.
+#   - IMPORTANT TRADEOFF (confirmed with the user 2026-09-13): an RFQ
+#     combo has a real counterparty (whichever market maker quoted it),
+#     unlike a normal Kalshi market's anonymous shared order book. And
+#     there's no mid-game exit -- once a quote is accepted, there's no
+#     ongoing liquidity to sell back into, so the position is genuinely
+#     locked in until the true final outcome. Regular solo moneyline
+#     positions don't have this problem (see worker.py's
+#     check_and_close_profitable_positions, which already does live
+#     price-based early exits on those) -- this tradeoff is specific to
+#     combos, accepted deliberately in exchange for the bigger payout.
+#     check_and_close_profitable_positions explicitly skips any position
+#     tagged is_combo=True for exactly this reason -- never attempt an
+#     early exit on a combo, it doesn't make sense structurally.
 #
 # OFF by default (COMBO_REAL_TRADING_ENABLED=false). Turning this on lets
 # the bot spend real money placing real IOC orders against live RFQ

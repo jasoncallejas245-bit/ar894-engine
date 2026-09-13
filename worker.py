@@ -920,6 +920,17 @@ def check_and_close_profitable_positions(client):
         return
 
     for ticker, pos in list(positions.items()):
+        # Combo positions (combo_trading.py) never get an early exit, ever
+        # -- unlike a normal Kalshi market's live order book, a custom RFQ
+        # combo has no ongoing liquidity once the original quote is gone.
+        # There's no real counterparty sitting there to sell back into
+        # mid-game. These are deliberately hold-to-true-final-outcome only,
+        # in exchange for the bigger payout the combo offers -- at the
+        # user's explicit confirmation (2026-09-13) that this tradeoff is
+        # fine, they just don't want it silently attempted.
+        if pos.get("is_combo"):
+            continue
+
         try:
             market = client.get_market(ticker)
         except Exception:
