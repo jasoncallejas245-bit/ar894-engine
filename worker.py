@@ -1439,6 +1439,16 @@ def run_once(client, seen_trades, run_sports_scan=True):
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"combo builder error: {e}")
 
+    # Real Kalshi combo trading (RFQ-based) -- see combo_trading.py. Off by
+    # default; only ever attempts a real trade when REAL_TRADING_LEAGUES is
+    # non-empty (checked inside _select_combo_legs) and not halted. Can
+    # block for up to COMBO_RFQ_WATCH_SECONDS watching for a live quote.
+    if REAL_TRADING_LEAGUES and not ledger.is_trading_halted():
+        try:
+            combo_trading.try_execute_real_combo(client, REAL_TRADING_LEAGUES, send_discord, DISCORD_WEBHOOK_BETS)
+        except Exception as e:
+            send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"combo trading error: {e}")
+
     run_fast_cycle(client)
     _record_cycle_status("finished")
 
