@@ -61,7 +61,6 @@ def load_paper_trades():
     data.setdefault("parlay", [])
     data.setdefault("props", [])
     data.setdefault("passing_yards", [])
-    data.setdefault("manual_bets", [])
     data.setdefault("wnba_combined", [])
     data.setdefault("combo", [])
     data.setdefault("combo_dryrun", [])
@@ -740,41 +739,45 @@ def format_event_timing(event_start_time):
 
 
 def _pending_pick_label(category, pick):
+    # Win probability included in every label 2026-09-13, at the user's
+    # request -- picks were shown with no percentage at all before.
     if category == "moneyline":
-        return f"{pick.get('picked_team', '?')} ({pick.get('league', '?')})"
+        prob = pick.get("market_probability")
+        prob_str = f" -- {prob*100:.0f}% to win" if prob is not None else ""
+        return f"{pick.get('picked_team', '?')} ({pick.get('league', '?')}){prob_str}"
     if category == "passing_yards":
-        return f"{pick.get('player', '?')} {str(pick.get('side', '')).upper()} {pick.get('line', '?')} yds ({pick.get('league', '?')})"
+        prob = pick.get("consensus_prob")
+        prob_str = f" -- {prob*100:.0f}% to hit" if prob is not None else ""
+        return f"{pick.get('player', '?')} {str(pick.get('side', '')).upper()} {pick.get('line', '?')} yds ({pick.get('league', '?')}){prob_str}"
     if category == "wnba_combined":
-        return f"{pick.get('player', '?')} {str(pick.get('side', '')).upper()} {pick.get('line', '?')} {pick.get('stat_type', '')} ({pick.get('league', '?')})"
+        prob = pick.get("consensus_prob")
+        prob_str = f" -- {prob*100:.0f}% to hit" if prob is not None else ""
+        return f"{pick.get('player', '?')} {str(pick.get('side', '')).upper()} {pick.get('line', '?')} {pick.get('stat_type', '')} ({pick.get('league', '?')}){prob_str}"
     return pick.get("pick_id", "?")
 
 
 def get_pending_bet_tier_breakdown():
     """
-    Every PENDING (not yet resolved) pick, grouped by its profitability
-    tier -- strong/thin/skip -- across every pick category that tracks a
-    bet_tier. Returns both the counts and the actual list of picks in each
-    tier, so the dashboard can show a quick count AND let the user expand
-    a tier to see exactly which picks are in it, instead of one big
-    pending count that mixes all three together.
+    Every PENDING (not yet resolved) STRONG-tier pick, across every pick
+    category that tracks a bet_tier. Simplified 2026-09-13, at the user's
+    request, to only ever compute/show strong-tier picks -- thin/skip are
+    still generated and stored (the adaptive learner needs the sample
+    size) but are never worth surfacing here.
     """
     paper_data = load_paper_trades()
-    picks_by_tier = {"strong": [], "thin": [], "skip": [], "untiered": []}
+    strong_picks = []
     for category in ["moneyline", "passing_yards", "wnba_combined"]:
         for pick in paper_data.get(category, []):
-            if pick.get("status") != "pending":
+            if pick.get("status") != "pending" or pick.get("bet_tier") != "strong":
                 continue
-            tier = pick.get("bet_tier")
-            if tier not in picks_by_tier:
-                tier = "untiered"
-            picks_by_tier[tier].append({
+            strong_picks.append({
                 "label": _pending_pick_label(category, pick),
                 "picked_at": pick.get("picked_at"),
                 "timing": format_event_timing(pick.get("event_start_time")),
                 # Raw identifiers so the dashboard can cross-reference this
-                # pick against parlay/player-props tickets and show "also
-                # bundled in ___" -- only the ones relevant to this
-                # category will actually be set.
+                # pick against player-props tickets and show "also bundled
+                # in ___" -- only the ones relevant to this category will
+                # actually be set.
                 "kalshi_ticker": pick.get("kalshi_ticker"),
                 "player": pick.get("player"),
                 "stat_type": pick.get("stat_type"),
@@ -782,12 +785,8 @@ def get_pending_bet_tier_breakdown():
                 "event_id": pick.get("event_id"),
             })
 
-    for tier in picks_by_tier:
-        picks_by_tier[tier].sort(key=lambda p: p.get("picked_at") or "", reverse=True)
-
-    counts = {tier: len(rows) for tier, rows in picks_by_tier.items()}
-    counts["total_pending"] = sum(counts.values())
-    return {"counts": counts, "picks": picks_by_tier}
+    strong_picks.sort(key=lambda p: p.get("picked_at") or "", reverse=True)
+    return {"counts": {"strong": len(strong_picks)}, "picks": {"strong": strong_picks}}
 
 
 def get_paper_trade_summary():

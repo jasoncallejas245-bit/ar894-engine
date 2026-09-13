@@ -213,53 +213,16 @@ PAGE_TEMPLATE = """
   {% endif %}
 
   <div class="card">
-    <h3>Pending Picks by Tier</h3>
-    <div class="sub" style="margin-bottom:12px;">How many picks are currently in play in each profitability tier -- tap a tier to see exactly which picks are in it.</div>
-
-    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:4px;">
-      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
-        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
-          <span class="badge badge-bet" style="font-size:1em;">🔥 Strong -- bet this</span>
-          <span class="big">{{ pending_tier_breakdown.counts.strong }}</span>
-        </summary>
-        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
-          {% for row in pending_tier_breakdown.picks.strong %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
-          {% else %}
-          <div class="muted">None pending right now.</div>
-          {% endfor %}
-        </div>
-      </details>
-
-      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
-        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
-          <span class="badge badge-thin" style="font-size:1em;">👍 Thin edge -- your call</span>
-          <span class="big">{{ pending_tier_breakdown.counts.thin }}</span>
-        </summary>
-        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
-          {% for row in pending_tier_breakdown.picks.thin %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
-          {% else %}
-          <div class="muted">None pending right now.</div>
-          {% endfor %}
-        </div>
-      </details>
-
-      <details style="background:#161b26; border-radius:8px; border:1px solid #2a3348; padding:10px;">
-        <summary style="cursor:pointer; list-style:none; display:flex; justify-content:space-between; align-items:center;">
-          <span class="badge badge-data" style="font-size:1em;">⚠ Skip -- no edge</span>
-          <span class="big">{{ pending_tier_breakdown.counts.skip }}</span>
-        </summary>
-        <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
-          {% for row in pending_tier_breakdown.picks.skip %}
-          <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
-          {% else %}
-          <div class="muted">None pending right now.</div>
-          {% endfor %}
-        </div>
-      </details>
+    <h3>Pending Strong Picks</h3>
+    <div class="sub" style="margin-bottom:12px;">Every currently-pending strong-tier pick and its win probability.</div>
+    <div style="max-height:320px; overflow-y:auto;">
+      {% for row in pending_tier_breakdown.picks.strong %}
+      <div class="sub" style="padding:4px 0; border-bottom:1px solid #21262d;"><div style="display:flex; justify-content:space-between; gap:8px;"><span>{{ row.label }}</span>{% if row.timing %}<span class="muted" style="white-space:nowrap;">{{ row.timing }}</span>{% endif %}</div>{% if row.get('bundled_in') %}<div class="muted" style="font-size:0.85em;">🎟 Also in: {{ row.bundled_in|join(', ') }}</div>{% endif %}</div>
+      {% else %}
+      <div class="muted">None pending right now.</div>
+      {% endfor %}
     </div>
-    <div class="sub" style="margin-top:4px;">{{ pending_tier_breakdown.counts.total_pending }} pending total</div>
+    <div class="sub" style="margin-top:8px;">{{ pending_tier_breakdown.counts.strong }} strong pick{{ '' if pending_tier_breakdown.counts.strong == 1 else 's' }} pending</div>
   </div>
 
   <div class="card">
@@ -352,35 +315,13 @@ PAGE_TEMPLATE = """
   </div>
 
   <div class="card">
-    <h3>Close Calls — Extra Info</h3>
-    <div class="sub" style="margin-bottom:10px;">These ARE real picks the bot made (not a separate or pending category) — just the subset that only barely cleared the "safe enough to bet" bar, basically a coin flip with a slight edge. Every pick (including the clear favorites, shown below in "All Recent Picks") now gets the same injury/matchup/pitcher context — this card just highlights the ones where that context mattered most.</div>
-    {% if too_close_picks %}
-      {% for p in too_close_picks[:6] %}
-      <div class="row" style="align-items:flex-start; margin-bottom:10px; border-bottom:1px solid #21262d; padding-bottom:10px;">
-        <div>
-          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span></div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format(p.market_probability*100) }}% likely to win · {{ p.status }}{% if p.starts_in %} · game {{ p.starts_in }}{% endif %}</div>
-          {% if p.context_note %}
-            <div class="sub" style="white-space:pre-line; margin-top:4px;">{{ p.context_note }}</div>
-          {% else %}
-            <div class="sub" style="margin-top:4px;">Nothing notable found.</div>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="muted">None right now — no picks have been this close to a coin flip yet.</div>
-    {% endif %}
-  </div>
-
-  <div class="card">
     <h3>All Recent Picks</h3>
-    <div class="sub" style="margin-bottom:10px;">🔥 Strong picks only -- clears the real-trading bar (60%+). Thin-edge and zero-edge picks are still generated and recorded in the background (the adaptive learning system needs that sample size to keep working), they just aren't shown here anymore. The bar under each pick is the same signal as a % gauge, red to green.</div>
+    <div class="sub" style="margin-bottom:10px;">🔥 Strong picks only -- clears the real-trading bar (60%+). The bar under each pick is the same signal as a % gauge, red to green.</div>
     {% if all_recent_picks %}
       {% for p in all_recent_picks[:15] %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span>{% if p.is_too_close %} <span class="badge">close call</span>{% endif %}{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
+          <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span> <span class="badge badge-bet">🔥 {{ "%.0f"|format((p.market_probability or 0)*100) }}% to win</span></div>
           <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
@@ -651,7 +592,6 @@ def dashboard():
     # are still generated and recorded (the adaptive threshold learner
     # needs that sample size), just no longer shown on the dashboard.
     _strong_moneyline_picks = [p for p in all_moneyline_picks if p.get("bet_tier") == "strong"]
-    too_close_picks = [p for p in _strong_moneyline_picks if p.get("is_too_close")][-15:][::-1]
     all_recent_picks = list(reversed(sorted(_strong_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
@@ -818,9 +758,6 @@ def dashboard():
     for w in recent_wins:
         w["resolved_at"] = _fmt_when(w.get("resolved_at")) or w.get("resolved_at") or ""
 
-    # Nicely format Close Calls' game-start countdown.
-    for p in too_close_picks:
-        p["starts_in"] = _fmt_countdown(p.get("event_start_time"))
 
     # Same "is this live or still to come" timing stamped onto every other
     # bet listing on the dashboard, not just the dedicated Pending Picks
@@ -1040,7 +977,6 @@ def dashboard():
         paper_starting_bankroll=pt.PAPER_STARTING_BANKROLL,
         adaptive=adaptive,
         min_sample=min_sample,
-        too_close_picks=too_close_picks,
         recent_wins=recent_wins,
         pending_picks=pending_picks,
         all_recent_picks=all_recent_picks,
