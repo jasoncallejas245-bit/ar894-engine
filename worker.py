@@ -1216,8 +1216,11 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
 
     edges = find_moneyline_edges(sharpapi_rows)
 
-    # Same-day only -- the event must start later today (UTC), not just within some
-    # rolling hour window that could roll into tomorrow.
+    # Changed 2026-09-14, at the user's request, to match the paper-trading
+    # path: was same-day-only, now uses the same multi-day lookahead
+    # (pt.MULTI_DAY_LOOKAHEAD_HOURS, 8 days) every league uses now, so real
+    # trading considers the same full week of games the dashboard/strong-tier
+    # picks do, instead of being narrower than what "strong" actually means.
     now = datetime.now(timezone.utc)
     near_term_edges = []
     for e in edges:
@@ -1229,7 +1232,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
         except Exception:
             continue
         hours_until = (start_dt - now).total_seconds() / 3600
-        if hours_until >= 0 and start_dt.date() == now.date():
+        if 0 <= hours_until <= pt.MULTI_DAY_LOOKAHEAD_HOURS:
             near_term_edges.append(e)
 
     edges = near_term_edges
