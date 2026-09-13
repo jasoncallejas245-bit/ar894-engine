@@ -31,7 +31,16 @@ DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
 # error traffic out.
 DISCORD_WEBHOOK_ERRORS = os.getenv("DISCORD_WEBHOOK_ERRORS", DISCORD_WEBHOOK_UPDATES)
 
-PROFIT_TARGET_PCT = float(os.getenv("PROFIT_TARGET_PCT", "20.0"))
+# Replaced 2026-09-13, at the user's request: was a flat 20% price-gain
+# trigger (current_bid 20% above entry_price). Now triggers on the SHARE
+# OF MAXIMUM POSSIBLE PROFIT already locked in, not raw price movement --
+# a YES contract always pays exactly $1 if it wins, so
+# max_profit_per_contract = 1.0 - entry_price, and
+# capture_ratio = (current_bid - entry_price) / max_profit_per_contract.
+# E.g. stake $800 at 73.3c/contract (1,092 contracts) has a $292 max
+# profit; cashing out at 96.3c (worth $1,052) locks in $252 of that
+# $292 -- an 86.3% capture ratio, which clears this bar.
+PROFIT_CAPTURE_PCT = float(os.getenv("PROFIT_CAPTURE_PCT", "0.85"))
 # Added 2026-09-11, at the user's request: don't take an early profit-target
 # exit on a position whose original stake was under this -- a tiny stake's
 # early-exit dollar profit was too small to be worth it. Below this, the
@@ -945,13 +954,17 @@ def check_and_close_profitable_positions(client):
             continue
 
         current_bid = float(current_bid)
-        gain_pct = ((current_bid - pos["entry_price"]) / pos["entry_price"]) * 100
+        max_profit_per_contract = 1.0 - pos["entry_price"]
+        if max_profit_per_contract <= 0:
+            continue  # entry was already at $1.00 -- no possible profit to capture
+        capture_ratio = (current_bid - pos["entry_price"]) / max_profit_per_contract
+        gain_pct = ((current_bid - pos["entry_price"]) / pos["entry_price"]) * 100  # kept for the Discord message below
 
         stake_dollars = pos["entry_price"] * pos["count_fp"]
         if stake_dollars < MIN_EARLY_EXIT_STAKE_DOLLARS:
             continue  # too small to bother taking early -- ride it to settlement instead
 
-        if gain_pct >= PROFIT_TARGET_PCT:
+        if capture_ratio >= PROFIT_CAPTURE_PCT:
             try:
                 price_kwargs = (
                     {"yes_price_dollars": f"{current_bid:.4f}"} if side == Side.YES
@@ -965,7 +978,7 @@ def check_and_close_profitable_positions(client):
                 entry_fee = kalshi_taker_fee_dollars(pos["entry_price"], pos["count_fp"])
                 exit_fee = kalshi_taker_fee_dollars(current_bid, pos["count_fp"])
                 profit = (current_bid - pos["entry_price"]) * pos["count_fp"] - entry_fee - exit_fee
-                msg = f"{ticker} [{side_label}]: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, gain +{gain_pct:.1f}% (${profit:.2f})"
+                msg = f"{ticker} [{side_label}]: entry ${pos['entry_price']:.2f} -> exit ${current_bid:.2f}, {capture_ratio*100:.0f}% of max profit captured, gain +{gain_pct:.1f}% (${profit:.2f})"
                 send_discord(DISCORD_WEBHOOK_BETS, _POSITION_CLOSED_PREFIX + msg)
                 # This early-exit P&L was never being recorded to the bot's
                 # own ledger before -- fixed, since the drawdown circuit
