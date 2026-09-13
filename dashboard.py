@@ -347,82 +347,6 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
-  <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
-    <h3 style="color:#8fa8ff;">🏈 Passing Yards -- Main Focus</h3>
-    <div class="sub" style="margin-bottom:10px;">NFL/NCAAF quarterback passing-yards picks -- PRACTICE BETS OF $15 EACH -- each graded independently (not bundled into an all-or-nothing ticket) -- built for volume so a real track record shows up fast.</div>
-    <div class="row">
-      <span class="label">Picks made</span>
-      <span class="big" style="font-size:1.3em;">{{ passing_yards_summary.total_picks or 0 }}</span>
-    </div>
-    <div class="row">
-      <span class="label">Resolved / correct</span>
-      <span>{{ passing_yards_summary.resolved or 0 }} resolved{% if passing_yards_summary.win_rate is not none %} · {{ "%.0f"|format(passing_yards_summary.win_rate) }}% correct{% endif %}</span>
-    </div>
-    <div class="row">
-      <span class="label">Paper bankroll</span>
-      <span class="{{ 'red' if passing_yards_bank.balance < 100 else 'green' }}">${{ "%.2f"|format(passing_yards_bank.balance) }}</span>
-    </div>
-    <div class="bar"><div class="bar-fill" style="width:{{ (100 * (passing_yards_summary.resolved or 0) / min_sample)|round(0, 'floor')|int if (passing_yards_summary.resolved or 0) < min_sample else 100 }}%;"></div></div>
-    <div class="sub" style="margin-top:8px;">{{ passing_yards_summary.resolved or 0 }} of {{ min_sample }} needed before this counts toward the profitability check above.</div>
-
-    {% if all_passing_yards_picks %}
-    <div style="margin-top:14px;">
-      {% for p in all_passing_yards_picks[:8] %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} yds{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }} yds{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
-          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
-        </div>
-        <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-      <div class="muted" style="margin-top:10px;">No passing-yards picks yet -- shows up here as soon as NFL/NCAAF games have prop lines listed.</div>
-    {% endif %}
-  </div>
-
-  <div class="card" style="border:1px solid #3a4a6b; background:linear-gradient(160deg,#141a2c,#12161f);">
-    <h3 style="color:#8fa8ff;">🏀 WNBA Combined Stats -- Main Focus</h3>
-    <div class="sub" style="margin-bottom:10px;">WNBA combo props (points+rebounds+assists-style multi-stat lines) -- PRACTICE BETS OF $15 EACH -- each graded independently, same high-volume approach as Passing Yards. <strong>WNBA games run more volatile than the other leagues here</strong> -- fewer possessions and bigger swings per play than NBA/NFL, worth weighing that in before betting one yourself even on a 🔥 strong pick.</div>
-    <div class="row">
-      <span class="label">Picks made</span>
-      <span class="big" style="font-size:1.3em;">{{ wnba_combined_summary.total_picks or 0 }}</span>
-    </div>
-    <div class="row">
-      <span class="label">Resolved / correct</span>
-      <span>{{ wnba_combined_summary.resolved or 0 }} resolved{% if wnba_combined_summary.win_rate is not none %} · {{ "%.0f"|format(wnba_combined_summary.win_rate) }}% correct{% endif %}</span>
-    </div>
-    <div class="row">
-      <span class="label">Paper bankroll</span>
-      <span class="{{ 'red' if wnba_combined_bank.balance < 100 else 'green' }}">${{ "%.2f"|format(wnba_combined_bank.balance) }}</span>
-    </div>
-    <div class="bar"><div class="bar-fill" style="width:{{ (100 * (wnba_combined_summary.resolved or 0) / min_sample)|round(0, 'floor')|int if (wnba_combined_summary.resolved or 0) < min_sample else 100 }}%;"></div></div>
-    <div class="sub" style="margin-top:8px;">{{ wnba_combined_summary.resolved or 0 }} of {{ min_sample }} needed before this counts toward the profitability check above.</div>
-
-    {% if all_wnba_combined_picks %}
-    <div style="margin-top:14px;">
-      {% for p in all_wnba_combined_picks[:8] %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ p.player }}</strong> <span class="badge">{{ p.league }}</span> {{ p.side|upper }} {{ p.line }} {{ p.stat_type }}{% if p.get('is_alternate_line') %} <span class="badge" title="A safer alternate line, not the sportsbook's default -- picked because it had a higher hit probability">🟢 goblin</span>{% endif %}{% if p.get('bet_tier') == 'strong' %} <span class="badge badge-bet">🔥 strong</span>{% elif p.get('bet_tier') == 'thin' %} <span class="badge badge-thin">👍 thin edge</span>{% endif %}</div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · {{ "%.0f"|format((p.consensus_prob or 0)*100) }}% probability to hit · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}{% if p.get('final_value') is not none %} · actual {{ "%.0f"|format(p.final_value) }}{% endif %}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>
-          <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
-        </div>
-        <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if p.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(p.get('hypothetical_pnl')) }}{% else %}{{ p.status }}{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-      <div class="muted" style="margin-top:10px;">No WNBA combined-stat picks yet -- shows up here as soon as WNBA games have combo prop lines listed.</div>
-    {% endif %}
-  </div>
-
   <div class="grid2">
     {% for c in categories %}
     <div class="card">
@@ -523,44 +447,29 @@ PAGE_TEMPLATE = """
   </div>
 
   <div class="card">
-    <h3>All Player Prop Tickets</h3>
-    <div class="sub" style="margin-bottom:10px;">Every PrizePicks-style paper ticket. Uses sportsbook consensus lines, not PrizePicks' own numbers -- see the Player Props card above for why.</div>
-    {% if all_prop_tickets %}
-      {% for t in all_prop_tickets[:15] %}
+    <h3>Real Kalshi Combo Trades</h3>
+    <div class="sub" style="margin-bottom:10px;">Real multi-leg Kalshi combo trades (via the RFQ system, see combo_trading.py) -- not a simulation. Currently {{ 'ON' if combo_real_trading_enabled else 'OFF' }} ({{ 'will place real trades when a good quote appears' if combo_real_trading_enabled else 'building/testing phase, not placing real trades yet' }}).</div>
+    {% if open_combo_positions or resolved_combo_trades %}
+      {% for c in open_combo_positions %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg {{ t.league|upper }} ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
-          <div class="sub">{% for l in t.legs %}{{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
-          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}{% if t.get('starts_in') %} · {{ t.starts_in }}{% endif %}</div>
-        </div>
-        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% elif t.status == 'needs_manual_check' %}check manually{% else %}pending{% endif %}
+          <div><strong>{{ c.legs|length }}-leg combo</strong> <span class="badge badge-bet">open</span></div>
+          <div class="sub">{{ c.legs|join(', ') }}</div>
+          <div class="sub">entry ${{ "%.4f"|format(c.entry_price) }} · {{ "%.2f"|format(c.count_fp) }} contracts · staked ${{ "%.2f"|format(c.entry_price * c.count_fp) }} · opened {{ c.opened_at }}</div>
         </div>
       </div>
       {% endfor %}
-    {% else %}
-      <div class="muted">No player prop tickets yet.</div>
-    {% endif %}
-  </div>
-
-  <div class="card">
-    <h3>All Combo Tickets (Moneyline + Props)</h3>
-    <div class="sub" style="margin-bottom:10px;">PrizePicks-style tickets mixing a moneyline pick with player props in one entry. Paper-only, same consensus-line caveat as props above.</div>
-    {% if all_combo_tickets %}
-      {% for t in all_combo_tickets[:15] %}
+      {% for c in resolved_combo_trades %}
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
-          <div><strong>{{ t.legs|length }}-leg combo ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
-          <div class="sub">{% for l in t.legs %}{% if l.leg_type == 'moneyline' %}[ML] {{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% else %}[PROP] {{ l.player }} {{ l.side|upper }} {{ l.line }} {{ l.stat_type }} ({{ "%.0f"|format((l.consensus_prob or 0)*100) }}%){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</div>
-          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}</div>
+          <div><strong>{{ c.ticker }}</strong> <span class="badge">{{ c.note }}</span></div>
+          <div class="sub">{{ c.at }}</div>
         </div>
-        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% elif t.status == 'needs_manual_check' %}check manually{% else %}pending{% endif %}
-        </div>
+        <div class="{{ 'green' if c.pnl >= 0 else 'red' }}" style="white-space:nowrap;">${{ "%.2f"|format(c.pnl) }}</div>
       </div>
       {% endfor %}
     {% else %}
-      <div class="muted">No combo tickets yet.</div>
+      <div class="muted">No real combo trades yet.</div>
     {% endif %}
   </div>
 
@@ -778,48 +687,10 @@ def dashboard():
             "sample": min(summary.get("parlay", {}).get("resolved", 0), min_sample),
             "note": "Kalshi has no parlay product -- this can never place a real trade, paper-only forever, purely to compare against single-position picks.",
         },
-        {
-            "key": "props", "label": "PrizePicks-Style Player Props (Experimental, Paper-Only)",
-            "summary": summary.get("props", {"resolved": 0, "win_rate": None}),
-            "bankroll_balance": props_bank["balance"],
-            "bankroll_down": props_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
-            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - props_bank["balance"]),
-            "settings": [
-                {
-                    "label": "Leg-count combos tried",
-                    "value": ", ".join(str(n) for n in sorted(set(pt.PROP_LEG_COUNTS))),
-                    "explanation": "Builds one all-or-nothing ticket per leg count every cycle, reusing the same ranked player pool for each -- matches how real PrizePicks Power Plays work (they start at 2 legs, not just 4).",
-                },
-                {
-                    "label": "Minimum consensus required",
-                    "value": f"{pt.PROP_MIN_CONSENSUS_PROB*100:.0f}%",
-                    "explanation": "Only takes a side if sportsbooks collectively lean at least this hard toward it -- skips true toss-up props.",
-                },
-            ],
-            "sample": min(summary.get("props", {}).get("resolved", 0), min_sample),
-            "note": "Uses sportsbook consensus lines, not PrizePicks' own exact numbers -- PrizePicks has no public API. Only MLB/NBA/WNBA get auto-graded against real box scores (NBA/WNBA unverified); a ticket that can't be confirmed either way shows as \"needs manual check\" instead of a guess.",
-        },
-        {
-            "key": "combo", "label": "PrizePicks Combo: Moneyline + Props (Experimental, Paper-Only)",
-            "summary": summary.get("combo", {"resolved": 0, "win_rate": None}),
-            "bankroll_balance": combo_bank["balance"],
-            "bankroll_down": combo_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
-            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - combo_bank["balance"]),
-            "settings": [
-                {
-                    "label": "Leg-count combos tried",
-                    "value": ", ".join(str(n) for n in sorted(set(pt.COMBO_LEG_COUNTS))),
-                    "explanation": "Mixes strong-tier moneyline picks and strong-tier player props into one ticket, ranked by each leg's own hit probability -- matches PrizePicks now allowing moneyline+prop combos in one entry.",
-                },
-                {
-                    "label": "Minimum combined probability",
-                    "value": f"{pt.PARLAY_MIN_COMBINED_PROB*100:.0f}%",
-                    "explanation": "A ticket whose legs' combined win probability falls below this isn't built at all -- too much of a longshot to be worth it.",
-                },
-            ],
-            "sample": min(summary.get("combo", {}).get("resolved", 0), min_sample),
-            "note": "Kalshi never mixes anything -- real trades stay solo, always. This is a paper-only, PrizePicks-only ticket type, same sportsbook-consensus-lines caveat as the props card above.",
-        },
+        # "props" and "combo" (paper, PrizePicks-style) category cards
+        # removed 2026-09-13 -- paused feature, at the user's request. The
+        # underlying paper_trades.json data/functions are untouched, just
+        # not surfaced on the dashboard anymore.
     ]
 
     all_moneyline_picks = pt.load_paper_trades().get("moneyline", [])
@@ -1139,6 +1010,22 @@ def dashboard():
     bot_pnl_data = ledger.load_bot_pnl()
     current_loss_pct = ledger.get_realized_loss_pct()
 
+    # Real Kalshi combo trades (combo_trading.py) -- open positions tagged
+    # is_combo=True, plus resolved ones from the bot's real P&L history
+    # (combo tickers all start with the MVE collection prefix).
+    import worker
+    import combo_trading
+    combo_real_trading_enabled = combo_trading.COMBO_REAL_TRADING_ENABLED
+    _open_positions = worker.load_open_positions()
+    open_combo_positions = [
+        {**pos, "legs": pos.get("combo_legs", [])}
+        for pos in _open_positions.values() if pos.get("is_combo")
+    ]
+    resolved_combo_trades = [
+        h for h in bot_pnl_data.get("history", [])
+        if str(h.get("ticker", "")).startswith("KXMVE")
+    ]
+
     # Performance chart -- PrizePicks-style running P&L across every
     # resolved paper pick, every category combined, oldest to newest.
     all_trades_data = pt.load_paper_trades()
@@ -1220,6 +1107,9 @@ def dashboard():
         all_parlay_tickets=all_parlay_tickets,
         all_prop_tickets=all_prop_tickets,
         all_combo_tickets=all_combo_tickets,
+        combo_real_trading_enabled=combo_real_trading_enabled,
+        open_combo_positions=open_combo_positions,
+        resolved_combo_trades=resolved_combo_trades,
         all_passing_yards_picks=all_passing_yards_picks,
         passing_yards_summary=passing_yards_summary,
         all_wnba_combined_picks=all_wnba_combined_picks,
@@ -1367,25 +1257,9 @@ def purge_duplicate_live_picks_route():
     return f"Kept {len(kept)} picks, removed {removed} duplicate live pick(s).\n"
 
 
-@app.route("/live_picks")
-def live_picks_route():
-    """
-    Live/in-game paper picks only (source="live"), plus the raw tracker
-    state (every game currently being watched, with its price history)
-    so the live strategy's behavior can be checked directly -- e.g.
-    confirming it did NOT fire during a price swing that later reversed.
-    """
-    import paper_trading as pt
-    import live_trading
-    data = pt.load_paper_trades()
-    live_picks = [p for p in data.get("moneyline", []) if p.get("source") == "live"]
-    tracker = live_trading._load()
-    return {
-        "live_trading_enabled": live_trading.LIVE_TRADING_ENABLED,
-        "live_picks_count": len(live_picks),
-        "live_picks": list(reversed(live_picks)),
-        "currently_tracked_games": tracker.get("games", {}),
-    }
+# /live_picks route removed 2026-09-13 along with live_trading.py itself
+# (the whole in-game live-betting strategy + tie alerts, at the user's
+# request -- not part of the Kalshi-only moneyline+combo direction).
 
 
 @app.route("/real_positions")

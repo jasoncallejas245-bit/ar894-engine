@@ -9,7 +9,6 @@ import requests
 from pykalshi import KalshiClient, Action, Side, MarketStatus
 
 import paper_trading as pt
-import live_trading  # LIVE TRADING HOOK -- delete this import to remove the feature
 import ledger
 import combo_trading
 from state_io import atomic_write_json, safe_read_json
@@ -1408,7 +1407,6 @@ def run_once(client, seen_trades, run_sports_scan=True):
             )
             if new_picks:
                 cycle_new_picks.extend(new_picks)
-            live_trading.track_live_candidates(league, rows, kalshi_events, safe_match_event)  # LIVE TRADING HOOK -- delete this line to remove the feature
 
             # PrizePicks-style player prop picks -- only for leagues we can
             # actually grade automatically (see paper_trading.py's prop
@@ -1469,8 +1467,6 @@ def run_fast_cycle(client):
     too; removed 2026-09-10 at the user's request -- too volatile to be
     worth learning from.)"""
     try:
-        live_trading.monitor_live_games(client, send_discord, None)  # LIVE TRADING HOOK -- delete this line to remove the feature; Discord notice turned off 2026-09-10 at user's request (keeping only bet-slip + tie notifications)
-        live_trading.check_tie_alerts(client, send_discord, DISCORD_WEBHOOK_UPDATES)  # TIE ALERT HOOK -- delete this line to remove the feature
         pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- feeds the early-exit check below
         pt.check_and_close_moneyline_paper_early(send_discord, None)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take; Discord notice off 2026-09-10
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
