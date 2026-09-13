@@ -1375,10 +1375,11 @@ def run_once(client, seen_trades, run_sports_scan=True):
         paper_min_edge_pct = 1.5
     # Collected across every league this cycle, then handed to the parlay
     # builder once the loop finishes -- see paper_trading.maybe_make_parlay_pick.
-    try:
-        probe_sharpapi_player_prop_market("mlb")
-    except Exception as e:
-        print(f"[props] market probe error: {e}")
+    # probe_sharpapi_player_prop_market() call removed 2026-09-13 -- it was a
+    # ONE-TIME diagnostic from 2026-09-10 (confirming SharpAPI's real prop
+    # field names), self-guarding after its first successful run, so it was
+    # already a no-op every cycle since -- just dead weight, not live waste.
+    # The function itself is left in place for reference/history.
 
     cycle_new_picks = []
     # Collected across every league this cycle, then handed to the combo
@@ -1412,7 +1413,13 @@ def run_once(client, seen_trades, run_sports_scan=True):
             # PrizePicks-style player prop picks -- only for leagues we can
             # actually grade automatically (see paper_trading.py's prop
             # section docstring).
-            if league in pt.PROP_GRADABLE_LEAGUES:
+            # BUGFIX 2026-09-13: this used to fetch prop_rows unconditionally
+            # for every gradable league, every cycle, even after
+            # PROP_PICKS_ENABLED / PASSING_YARDS_ENABLED / WNBA_COMBINED_ENABLED
+            # were all switched off -- a real SharpAPI call made and thrown
+            # away every single cycle for data nothing was using anymore.
+            props_needed = pt.PROP_PICKS_ENABLED or pt.PASSING_YARDS_ENABLED or pt.WNBA_COMBINED_ENABLED
+            if props_needed and league in pt.PROP_GRADABLE_LEAGUES:
                 prop_rows = fetch_sharpapi_player_props(league)
                 _, ranked_props = pt.maybe_make_prop_pick(league, prop_rows, send_discord, DISCORD_WEBHOOK_BETS)
                 if ranked_props:
