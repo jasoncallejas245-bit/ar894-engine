@@ -1378,8 +1378,15 @@ def maybe_make_prop_pick(league, prop_rows, send_discord_fn=None, webhook=None):
             return [], []
 
         for leg in ranked:
-            if not leg.get("event_id"):
-                leg["event_id"] = context_data.get_event_id_for_matchup(league, leg.get("away_team"), leg.get("home_team"))
+            # BUGFIX 2026-09-13: was `if not leg.get("event_id")` -- rows
+            # from SharpAPI always carry SOME event_id (SharpAPI's own
+            # internal format), so this never actually ran and every
+            # prop's event_id was left as an ESPN-incompatible id that
+            # is_game_final/get_player_boxscore_stat could never match,
+            # permanently stuck "pending". ESPN's own id is now always
+            # looked up and takes priority; SharpAPI's id is only kept as
+            # a last-resort dedup key if the ESPN lookup fails outright.
+            leg["event_id"] = context_data.get_event_id_for_matchup(league, leg.get("away_team"), leg.get("home_team")) or leg.get("event_id")
 
         paper_data = load_paper_trades()
         tickets = []
@@ -1514,8 +1521,11 @@ def maybe_make_combo_pick(candidate_picks, prop_candidates, send_discord_fn=None
             return []
 
         for leg in ranked:
-            if leg["leg_type"] == "prop" and not leg.get("event_id"):
-                leg["event_id"] = context_data.get_event_id_for_matchup(leg["league"], leg.get("away_team"), leg.get("home_team"))
+            # BUGFIX 2026-09-13: same issue as maybe_make_prop_pick above --
+            # always re-look-up the real ESPN id instead of trusting
+            # whatever event_id was already on the leg.
+            if leg["leg_type"] == "prop":
+                leg["event_id"] = context_data.get_event_id_for_matchup(leg["league"], leg.get("away_team"), leg.get("home_team")) or leg.get("event_id")
 
         paper_data = load_paper_trades()
         tickets = []
@@ -1843,9 +1853,21 @@ def maybe_make_passing_yards_picks(league, prop_rows, send_discord_fn=None, webh
             line = cand["line"]
             if cand["consensus_prob"] < PASSING_YARDS_MIN_PROB:
                 continue
-            event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
+            # BUGFIX 2026-09-13: this used to be
+            # `cand.get("event_id") or get_event_id_for_matchup(...)` --
+            # SharpAPI's own event_id (its internal format, e.g.
+            # "nfl_49ers_rams_2026-09-10_b3") is basically always present,
+            # so the ESPN lookup on the right never actually ran. Grading
+            # (is_game_final / get_player_boxscore_stat) needs a REAL ESPN
+            # event id to match against -- SharpAPI's own id format never
+            # matches one, so every pick built this way was permanently
+            # stuck "pending" forever, no matter how long the game had
+            # been over. The ESPN lookup must come first; SharpAPI's own
+            # id is only useful as a last-resort dedup key, never for
+            # grading.
+            event_id = context_data.get_event_id_for_matchup(
                 league, cand.get("away_team"), cand.get("home_team")
-            )
+            ) or cand.get("event_id")
             dedup_key = (player, event_id)
             if dedup_key in already_picked:
                 continue
@@ -2190,9 +2212,13 @@ def maybe_make_wnba_combined_picks(league, prop_rows, send_discord_fn=None, webh
             line = cand["line"]
             if cand["consensus_prob"] < WNBA_COMBINED_STAT_MIN_PROB:
                 continue
-            event_id = cand.get("event_id") or context_data.get_event_id_for_matchup(
+            # BUGFIX 2026-09-13: same fix as PASSING_YARDS_MIN_PROB above --
+            # ESPN lookup must come first, SharpAPI's own event_id is
+            # never grade-able and was silently blocking every ESPN
+            # lookup from ever running.
+            event_id = context_data.get_event_id_for_matchup(
                 league, cand.get("away_team"), cand.get("home_team")
-            )
+            ) or cand.get("event_id")
             dedup_key = (player, cand["stat_type"], event_id)
             if dedup_key in already_picked:
                 continue

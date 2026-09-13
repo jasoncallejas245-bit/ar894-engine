@@ -581,13 +581,19 @@ def is_game_final(league, event_id):
     to gate prop grading so a mid-game box score is never mistaken for a
     final one. Never raises (False on any failure -- treated as "not
     confirmed final yet," not "definitely not final")."""
-    try:
-        events = get_scoreboard(league)
-        for e in events:
-            if str(e.get("id")) == str(event_id):
-                status = e.get("competitions", [{}])[0].get("status", {}).get("type", {})
-                return bool(status.get("completed"))
+    # BUGFIX 2026-09-13: this used to search get_scoreboard(league), which
+    # is ESPN's "today only" scoreboard -- so a game from even one day ago
+    # would never be found here, permanently reading as "not final" no
+    # matter how much time passed. Switched to the same per-event summary
+    # endpoint get_player_boxscore_stat already uses, which works for any
+    # event_id regardless of date.
+    path = ESPN_LEAGUE_PATHS.get(league)
+    if not path or not event_id:
         return False
+    try:
+        data = _fetch_json(f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary", params={"event": event_id})
+        status = data.get("header", {}).get("competitions", [{}])[0].get("status", {}).get("type", {})
+        return bool(status.get("completed"))
     except Exception as e:
         print(f"[context_data] final-status check failed for event {event_id}: {e}")
         return False
