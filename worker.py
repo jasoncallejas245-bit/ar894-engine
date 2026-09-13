@@ -11,6 +11,7 @@ from pykalshi import KalshiClient, Action, Side, MarketStatus
 import paper_trading as pt
 import live_trading  # LIVE TRADING HOOK -- delete this import to remove the feature
 import ledger
+import combo_trading
 from state_io import atomic_write_json, safe_read_json
 
 if os.getenv("KALSHI_PRIVATE_KEY_CONTENT"):
