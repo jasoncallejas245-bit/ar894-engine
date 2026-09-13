@@ -313,18 +313,6 @@ PAGE_TEMPLATE = """
       })();
     </script>
 
-    {% if parlay_leg_breakdown %}
-    <div style="margin-top:16px;">
-      <div class="sub" style="margin-bottom:6px;">Parlay leg-count breakdown -- which combo size is actually working:</div>
-      {% for b in parlay_leg_breakdown %}
-      <div class="row" style="border-bottom:1px solid #21262d; padding-bottom:6px; margin-bottom:6px;">
-        <span>{{ b.leg_count }}-leg</span>
-        <span class="sub">{{ b.resolved }} resolved{% if b.win_rate is not none %} · {{ "%.0f"|format(b.win_rate) }}% won{% endif %}</span>
-        <span class="{{ 'green' if b.total_pnl >= 0 else 'red' }}">${{ "%.2f"|format(b.total_pnl) }}</span>
-      </div>
-      {% endfor %}
-    </div>
-    {% endif %}
   </div>
 
   <div class="card">
@@ -422,27 +410,6 @@ PAGE_TEMPLATE = """
       {% endfor %}
     {% else %}
       <div class="muted">No picks yet.</div>
-    {% endif %}
-  </div>
-
-  <div class="card">
-    <h3>All Parlay Tickets</h3>
-    <div class="sub" style="margin-bottom:10px;">Every paper parlay ticket, win or lose. Paper-only forever -- Kalshi has no real parlay product.</div>
-    {% if all_parlay_tickets %}
-      {% for t in all_parlay_tickets[:15] %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ t.legs|length }}-leg ticket</strong> <span class="badge">{{ t.status }}</span> <span class="badge badge-bet">{{ "%.0f"|format((t.combined_prob or 0)*100) }}% combined</span>{% if t.get('potential_payout') is not none %} <span class="badge">pays +${{ "%.2f"|format(t.potential_payout) }}</span>{% endif %}</div>
-          <div class="sub">{% for l in t.legs %}{{ l.picked_team }} ({{ l.league }}, {{ "%.0f"|format((l.entry_price or 0)*100) }}%){% if not loop.last %}, {% endif %}{% endfor %}</div>
-          <div class="sub">staked ${{ "%.2f"|format(t.stake_dollars or 0) }} · {{ t.get('picked_at_fmt') or t.picked_at }}{% if t.get('starts_in') %} · {{ t.starts_in }}{% endif %}</div>
-        </div>
-        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% else %}pending{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="muted">No parlay tickets yet.</div>
     {% endif %}
   </div>
 
@@ -614,7 +581,6 @@ def dashboard():
     summary = pt.get_paper_trade_summary()
     bankroll = pt.load_paper_bankroll()
     ml_bank = bankroll.get("moneyline", {"balance": pt.PAPER_STARTING_BANKROLL})
-    parlay_bank = bankroll.get("parlay", {"balance": pt.PAPER_STARTING_BANKROLL})
     props_bank = bankroll.get("props", {"balance": pt.PAPER_STARTING_BANKROLL})
     combo_bank = bankroll.get("combo", {"balance": pt.PAPER_STARTING_BANKROLL})
     adaptive = pt.load_adaptive_settings()
@@ -666,27 +632,8 @@ def dashboard():
             ],
             "sample": min(adaptive.get("moneyline_sample_size", 0), min_sample),
         },
-        {
-            "key": "parlay", "label": "Parlay Mode (Experimental, Paper-Only Forever)",
-            "summary": summary.get("parlay", {"resolved": 0, "win_rate": None}),
-            "bankroll_balance": parlay_bank["balance"],
-            "bankroll_down": parlay_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
-            "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - parlay_bank["balance"]),
-            "settings": [
-                {
-                    "label": "Leg-count combos tried",
-                    "value": ", ".join(str(n) for n in sorted(set(pt.PARLAY_LEG_COUNTS))),
-                    "explanation": "Builds one ticket per leg count every cycle, reusing the same ranked candidate pool for each (2-leg is the top 2 picks, 3-leg adds the next-best, etc.), so it's clear from real data which size actually pays off -- see the leg-count breakdown below.",
-                },
-                {
-                    "label": "Heaviest favorite allowed per leg",
-                    "value": f"${pt.PARLAY_MAX_LEG_PRICE:.2f}",
-                    "explanation": "A favorite priced above this eats parlay payout value without adding much safety, so it's skipped for the next-best leg -- a real pattern found in the user's own betting history.",
-                },
-            ],
-            "sample": min(summary.get("parlay", {}).get("resolved", 0), min_sample),
-            "note": "Kalshi has no parlay product -- this can never place a real trade, paper-only forever, purely to compare against single-position picks.",
-        },
+        # "parlay" category card removed 2026-09-13 -- feature removed
+        # entirely, superseded by real Kalshi combo trading.
         # "props" and "combo" (paper, PrizePicks-style) category cards
         # removed 2026-09-13 -- paused feature, at the user's request. The
         # underlying paper_trades.json data/functions are untouched, just
@@ -706,19 +653,12 @@ def dashboard():
     too_close_picks = [p for p in _strong_moneyline_picks if p.get("is_too_close")][-15:][::-1]
     all_recent_picks = list(reversed(sorted(_strong_moneyline_picks, key=lambda p: p.get("picked_at") or "")))
 
-    all_parlay_tickets = list(reversed(sorted(pt.load_paper_trades().get("parlay", []), key=lambda t: t.get("picked_at") or "")))
     all_prop_tickets = list(reversed(sorted(pt.load_paper_trades().get("props", []), key=lambda t: t.get("picked_at") or "")))
     all_combo_tickets = list(reversed(sorted(pt.load_paper_trades().get("combo", []), key=lambda t: t.get("picked_at") or "")))
 
-    # Combined "whole slip" hit probability -- parlay already tracks
-    # combined_entry_price (product of each leg's Kalshi contract price,
-    # which IS the market's implied combined probability); props tickets
-    # don't store one, so compute it here as the product of each leg's own
+    # Combined "whole slip" hit probability -- props tickets don't store
+    # one, so compute it here as the product of each leg's own
     # sportsbook-consensus probability.
-    for _t in all_parlay_tickets:
-        _t["combined_prob"] = _t.get("combined_entry_price")
-        if _t.get("status") == "pending" and _t.get("contracts") and _t.get("combined_entry_price") is not None:
-            _t["potential_payout"] = round((1.0 - _t["combined_entry_price"]) * _t["contracts"] - (_t.get("entry_fees") or 0), 2)
     for _t in all_prop_tickets:
         _cp = _t.get("combined_prob")
         if _cp is None:
@@ -770,11 +710,12 @@ def dashboard():
     # Discord check_profitability_milestones alert uses, shown here too
     # so the answer is visible any time without waiting for a Discord
     # message. moneyline is the only category that could ever place a
-    # REAL trade (parlay/props never can -- no Kalshi product).
+    # REAL trade directly this way (combo trading is separate, see the
+    # Real Kalshi Combo Trades card).
     _real_capable_status = {"moneyline": bool(worker.REAL_TRADING_LEAGUES)}
-    _category_labels = {"moneyline": "Sports Moneyline", "parlay": "Parlay Mode", "props": "Player Props", "passing_yards": "Passing Yards (NFL/NCAAF)"}
+    _category_labels = {"moneyline": "Sports Moneyline"}
     profitability_status = []
-    for _cat in ["moneyline", "passing_yards", "parlay", "props"]:
+    for _cat in ["moneyline"]:
         _stats = summary.get(_cat, {"resolved": 0, "win_rate": None, "total_hypothetical_pnl": None})
         _resolved = _stats.get("resolved", 0)
         _pnl = _stats.get("total_hypothetical_pnl")
@@ -910,25 +851,18 @@ def dashboard():
         parsed.sort(key=lambda pair: pair[0])
         return parsed[0][1]
 
-    for t in all_parlay_tickets:
-        t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
     for t in all_prop_tickets:
         t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
     for t in all_combo_tickets:
         t["starts_in"] = _fmt_countdown(_earliest_leg_start(t.get("legs")))
 
-    # Cross-reference every parlay/props ticket back to the individual
-    # picks that make it up, so a pick shown on its own elsewhere (All
-    # Recent Picks, Passing Yards, the pending-tier lists) can say which
-    # ticket(s) it's actually bundled into -- previously that link only
-    # showed up in the separate "All Parlay/Prop Tickets" sections.
+    # Cross-reference every props ticket back to the individual picks
+    # that make it up, so a pick shown on its own elsewhere (All Recent
+    # Picks, Passing Yards, the pending-tier lists) can say which
+    # ticket(s) it's actually bundled into. ticker_to_parlays kept as an
+    # empty dict (the "parlay" feature was removed 2026-09-13) so
+    # _bundle_labels_for_ticker keeps working with no results.
     ticker_to_parlays = {}
-    for t in all_parlay_tickets:
-        desc = f"{t.get('leg_count', len(t.get('legs', [])))}-leg parlay"
-        for leg in t.get("legs", []):
-            ticker = leg.get("kalshi_ticker")
-            if ticker:
-                ticker_to_parlays.setdefault(ticker, []).append(desc)
 
     propkey_to_tickets = {}
     for t in all_prop_tickets:
@@ -1067,8 +1001,6 @@ def dashboard():
     total_resolved_count = len(resolved_events)
     net_pnl = pnl_points[-1] if pnl_points else 0.0
 
-    parlay_leg_breakdown = pt.get_parlay_leg_count_breakdown()
-
     pending_tier_breakdown = pt.get_pending_bet_tier_breakdown()
     for tier_rows in pending_tier_breakdown["picks"].values():
         for row in tier_rows:
@@ -1104,7 +1036,6 @@ def dashboard():
         recent_wins=recent_wins,
         pending_picks=pending_picks,
         all_recent_picks=all_recent_picks,
-        all_parlay_tickets=all_parlay_tickets,
         all_prop_tickets=all_prop_tickets,
         all_combo_tickets=all_combo_tickets,
         combo_real_trading_enabled=combo_real_trading_enabled,
@@ -1127,7 +1058,6 @@ def dashboard():
         chart_svg=chart_svg,
         total_resolved_count=total_resolved_count,
         net_pnl=net_pnl,
-        parlay_leg_breakdown=parlay_leg_breakdown,
     )
 
 

@@ -25,6 +25,11 @@ os.environ.setdefault("KALSHI_PRIVATE_KEY_PATH", os.environ["KALSHI_PRIVATE_KEY_
 SHARPAPI_KEY = os.environ["SHARPAPI_KEY"]
 DISCORD_WEBHOOK_BETS = os.environ["DISCORD_WEBHOOK_BETS"]
 DISCORD_WEBHOOK_UPDATES = os.environ["DISCORD_WEBHOOK_UPDATES"]
+# Turned off entirely 2026-09-13, at the user's request -- no longer
+# needed. send_discord() still logs errors locally for the dashboard's
+# "recent errors" card either way; this only gates the actual network
+# call to Discord's webhook.
+DISCORD_NOTIFICATIONS_ENABLED = os.getenv("DISCORD_NOTIFICATIONS_ENABLED", "false").lower() == "true"
 # Optional, separate channel -- falls back to DISCORD_WEBHOOK_UPDATES if
 # not set, so nothing breaks until this is actually configured in Railway.
 # Set DISCORD_WEBHOOK_ERRORS to a different channel's webhook URL to split
@@ -254,7 +259,15 @@ def _slip_min_interval(webhook_url):
 
 def send_discord(webhook_url, message, _retries=3, immediate=False):
     if message.startswith(_ERROR_PREFIX):
-        _record_error_log(message)
+        _record_error_log(message)  # dashboard's "recent errors" still works either way
+
+    # Discord notifications turned off entirely 2026-09-13, at the user's
+    # request -- no longer needed. Error logging above (for the dashboard)
+    # still happens; only the actual Discord network call is skipped.
+    if not DISCORD_NOTIFICATIONS_ENABLED:
+        return
+
+    if message.startswith(_ERROR_PREFIX):
         webhook_url = DISCORD_WEBHOOK_ERRORS
         immediate = True  # errors are never batched -- always sent right away
 
@@ -1396,8 +1409,6 @@ def run_once(client, seen_trades, run_sports_scan=True):
     else:
         paper_favorite_min_prob = max(0.50, pt.get_effective_favorite_min_prob() - 0.03)
         paper_min_edge_pct = 1.5
-    # Collected across every league this cycle, then handed to the parlay
-    # builder once the loop finishes -- see paper_trading.maybe_make_parlay_pick.
     # probe_sharpapi_player_prop_market() call removed 2026-09-13 -- it was a
     # ONE-TIME diagnostic from 2026-09-10 (confirming SharpAPI's real prop
     # field names), self-guarding after its first successful run, so it was
@@ -1460,11 +1471,6 @@ def run_once(client, seen_trades, run_sports_scan=True):
             send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"[{league}] scan error: {e}")
 
     try:
-        pt.maybe_make_parlay_pick(cycle_new_picks, send_discord, DISCORD_WEBHOOK_BETS)
-    except Exception as e:
-        send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"parlay builder error: {e}")
-
-    try:
         pt.maybe_make_combo_pick(cycle_new_picks, cycle_prop_candidates, send_discord, DISCORD_WEBHOOK_BETS)
     except Exception as e:
         send_discord(DISCORD_WEBHOOK_UPDATES, _ERROR_PREFIX + f"combo builder error: {e}")
@@ -1494,7 +1500,6 @@ def run_fast_cycle(client):
         pt.track_moneyline_contract_prices(client)  # MONEYLINE PRICE HISTORY HOOK -- feeds the early-exit check below
         pt.check_and_close_moneyline_paper_early(send_discord, None)  # MONEYLINE EARLY-EXIT HOOK -- paper-only profit-take; Discord notice off 2026-09-10
         pt.resolve_moneyline_paper_trades(client, send_discord, None)  # Discord notice off 2026-09-10 at user's request
-        pt.resolve_parlay_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_prop_paper_trades(send_discord, None)  # Discord notice off 2026-09-10 at user's request
         pt.resolve_combo_paper_trades(send_discord, None)  # same pattern as parlay/prop resolution above
         pt.resolve_passing_yards_picks(send_discord, None)  # Discord notice off 2026-09-10, consistent with the other resolve calls above -- new picks still post

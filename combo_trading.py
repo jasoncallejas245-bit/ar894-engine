@@ -60,8 +60,10 @@ COMBO_REAL_TRADING_ENABLED = os.getenv("COMBO_REAL_TRADING_ENABLED", "false").lo
 
 COMBO_COLLECTION_TICKER = os.getenv("COMBO_COLLECTION_TICKER", "KXMVECROSSCATEGORY-R")
 
+# Fixed at exactly 2 legs, at the user's explicit request (2026-09-13) --
+# combo bets should only ever be 2 moneylines, nothing more.
 COMBO_MIN_LEGS = int(os.getenv("COMBO_MIN_LEGS", "2"))
-COMBO_MAX_LEGS = int(os.getenv("COMBO_MAX_LEGS", "3"))
+COMBO_MAX_LEGS = int(os.getenv("COMBO_MAX_LEGS", "2"))
 COMBO_STAKE_DOLLARS = float(os.getenv("COMBO_STAKE_DOLLARS", "15.0"))
 
 # How long to watch a live RFQ for a fillable quote before giving up, and
