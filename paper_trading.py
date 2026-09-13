@@ -396,7 +396,16 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             fair_prob = fair_probs[selection]
             edge_pct = (fair_prob - yes_price) * 100
 
-            if _clears_fee_adjusted_edge_local(edge_pct, yes_price, min_edge_pct) and fair_prob >= favorite_min_prob:
+            # Edge requirement dropped 2026-09-14 here too, at the user's
+            # request -- this is the actual candidate-selection gate that
+            # was still silently requiring _clears_fee_adjusted_edge_local
+            # (a real Kalshi-vs-consensus mispricing + net edge after fees)
+            # even after the "strong" tier classification downstream was
+            # already relaxed to favorite-only. That's why zero picks were
+            # still being made after the first edge-removal change -- this
+            # was the real remaining gate. min_edge_pct is kept as a
+            # parameter (still passed in) but no longer checked.
+            if fair_prob >= favorite_min_prob:
                 candidate = {
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
