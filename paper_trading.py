@@ -416,16 +416,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
 
         if best_pick is None:
             funnel["no_qualifying_edge"] += 1
-            continue  # no genuine edge on either side -- skip, don't force a pick
+            continue  # no favorite cleared favorite_min_prob on either side -- skip
 
-        # Zero/negative-edge picks used to be kept anyway (tagged "skip") as
-        # a wide, data-collection-only net to build sample size. Removed
-        # 2026-09-11 at the user's request -- not useful at this early a
-        # stage, and it was burning context_data API calls on picks nobody
-        # would ever act on. Bail out here, before that lookup.
-        if (best_pick["edge_pct"] or 0.0) <= 0:
-            funnel["zero_edge_skipped"] += 1
-            continue
+        # Edge requirement dropped entirely 2026-09-14 at the user's request --
+        # this was a third, previously-missed gate requiring edge_pct > 0 (Kalshi
+        # mispriced vs. consensus) on top of the favorite_min_prob check above.
+        # It was silently re-suppressing picks on efficiently-priced favorites
+        # even after both other edge gates were removed. Only favorite_min_prob
+        # (checked above, building best_pick) governs picks now, matching the
+        # real-trading path in worker.py.
 
         funnel["picked"] += 1
 
