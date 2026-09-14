@@ -81,6 +81,41 @@ COMBO_RFQ_POLL_INTERVAL_SECONDS = float(os.getenv("COMBO_RFQ_POLL_INTERVAL_SECON
 # the legs are actually worth.
 COMBO_MIN_EDGE = float(os.getenv("COMBO_MIN_EDGE", "0.03"))
 
+# In-memory de-dupe so we don't hammer create_rfq for the same combo market
+# faster than Kalshi allows. The same top-ranked strong-tier legs get
+# re-selected every fast cycle (the pending-picks list barely changes
+# minute to minute), so without this we'd resubmit an RFQ for the exact
+# same combo_ticker on every cycle -- and Kalshi rejects a second RFQ on a
+# market that still has one open with a 409 "already exists". Not
+# persisted across restarts; worst case after a restart is one harmless
+# duplicate-RFQ attempt, caught below anyway.
+_last_rfq_at = {}
+COMBO_RFQ_COOLDOWN_SECONDS = float(os.getenv("COMBO_RFQ_COOLDOWN_SECONDS", "120"))
+
+
+def _create_rfq_deduped(client, combo_ticker, target_cost_dollars):
+    """
+    Submits an RFQ for combo_ticker, but skips submitting a new one if we
+    already did for this exact combo within COMBO_RFQ_COOLDOWN_SECONDS --
+    there's still one live, nothing to do. If Kalshi rejects it anyway
+    with "already exists" (e.g. right after a process restart, before our
+    in-memory cooldown knows about it), that's not a real failure either --
+    it just confirms one is already live -- so it's treated the same way,
+    not re-raised.
+    """
+    now = time.time()
+    if now - _last_rfq_at.get(combo_ticker, 0) < COMBO_RFQ_COOLDOWN_SECONDS:
+        return
+    try:
+        client.communications.create_rfq(
+            market_ticker=combo_ticker,
+            target_cost_dollars=target_cost_dollars,
+        )
+    except Exception as e:
+        if "already_exists" not in str(e) and "already exists" not in str(e):
+            raise
+    _last_rfq_at[combo_ticker] = now
+
 
 def _event_ticker_from_market_ticker(market_ticker):
     """KXMLBGAME-26SEP131335KCBOS-BOS -> KXMLBGAME-26SEP131335KCBOS."""
@@ -165,10 +200,7 @@ def try_execute_real_combo(client, real_trading_leagues, send_discord_fn, webhoo
             market = collection.create_market(selected_markets)
             combo_ticker = market.ticker
 
-        client.communications.create_rfq(
-            market_ticker=combo_ticker,
-            target_cost_dollars=f"{COMBO_STAKE_DOLLARS:.2f}",
-        )
+        _create_rfq_deduped(client, combo_ticker, f"{COMBO_STAKE_DOLLARS:.2f}")
 
         max_price = max(0.01, combined_prob - COMBO_MIN_EDGE)
         deadline = time.time() + COMBO_RFQ_WATCH_SECONDS
@@ -318,10 +350,7 @@ def try_paper_combo_dry_run(client, send_discord_fn=None, webhook=None):
             market = collection.create_market(selected_markets)
             combo_ticker = market.ticker
 
-        client.communications.create_rfq(
-            market_ticker=combo_ticker,
-            target_cost_dollars=f"{COMBO_STAKE_DOLLARS:.2f}",
-        )
+        _create_rfq_deduped(client, combo_ticker, f"{COMBO_STAKE_DOLLARS:.2f}")
 
         deadline = time.time() + COMBO_RFQ_WATCH_SECONDS
         quote_seen = None
