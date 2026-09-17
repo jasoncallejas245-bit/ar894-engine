@@ -322,7 +322,10 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.picked_team }}</strong> <span class="badge">{{ p.league }}</span> <span class="badge badge-bet">🔥 {{ "%.0f"|format((p.market_probability or 0)*100) }}% to win</span></div>
-          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
+          <div class="sub">{{ p.away_team }} @ {{ p.home_team }} · contract price ${{ "%.2f"|format(p.entry_price or 0) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied)
+          {%- if p.status == 'pending' %} · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}
+          {%- else %} · staked <strong>${{ "%.2f"|format(p.get('stake_dollars_display', 15)) }}</strong> → received <strong class="{{ 'green' if p.status == 'won' else 'red' }}">${{ "%.2f"|format(p.get('cash_received', 0)) }}</strong>
+          {%- endif %} · {{ p.status }}{% if p.get('starts_in') %} · {{ p.starts_in }}{% endif %}</div>{% if p.get('bundled_in') %}<div class="sub">🎟 Also in: {{ p.bundled_in|join(', ') }}</div>{% endif %}
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
         </div>
         <div class="{{ 'green' if p.status == 'won' else ('red' if p.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
@@ -409,7 +412,8 @@ PAGE_TEMPLATE = """
       <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
         <div>
           <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% if p.exit_reason == "early_profit_target" %} <span class="badge">early exit</span>{% endif %}</div>
-          <div class="sub">entry ${{ "%.2f"|format(p.entry_price) }}{% if p.exit_price %} → exit ${{ "%.2f"|format(p.exit_price) }}{% endif %} · {{ p.resolved_at }}</div>
+          <div class="sub">staked <strong>${{ "%.2f"|format(p.stake_dollars) }}</strong> → received <strong class="green">${{ "%.2f"|format(p.cash_received) }}</strong> · {{ p.resolved_at }}</div>
+          <div class="sub">(contract price ${{ "%.2f"|format(p.entry_price) }}{% if p.exit_price %} → ${{ "%.2f"|format(p.exit_price) }}{% endif %})</div>
         </div>
         <div class="green" style="white-space:nowrap;">${{ "%.2f"|format(p.pnl) }}</div>
       </div>
@@ -588,6 +592,16 @@ def dashboard():
             _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _p["entry_price"])
             _fee = pt._kalshi_taker_fee_dollars_local(_p["entry_price"], _contracts)
             _p["potential_payout"] = round((1.0 - _p["entry_price"]) * _contracts - _fee, 2)
+        elif _p.get("status") in ("won", "lost") and _p.get("hypothetical_pnl") is not None:
+            # Actual cash in/out for a settled pick, not just the per-contract
+            # price -- same reasoning as recent_wins above.
+            _stake = _p.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS
+            _contracts = _p.get("contracts")
+            if _contracts:
+                _p["cash_received"] = round(_contracts * (_p.get("exit_price") if _p.get("exit_reason") == "early_profit_target" else (1.0 if _p["status"] == "won" else 0.0)), 2)
+            else:
+                _p["cash_received"] = round(_stake + _p["hypothetical_pnl"], 2)
+            _p["stake_dollars_display"] = round(_stake, 2)
     # Strong-tier only (2026-09-11, at the user's request): thin/skip picks
     # are still generated and recorded (the adaptive threshold learner
     # needs that sample size), just no longer shown on the dashboard.
@@ -670,11 +684,24 @@ def dashboard():
     recent_wins = []
     for p in all_moneyline_picks:
         if p.get("status") == "won" and p.get("hypothetical_pnl") is not None:
+            # Actual cash value, not just the per-contract price -- entry_price/
+            # exit_price ($0.xx) read like a probability, not money, and the
+            # user asked to see real dollars in and dollars out. stake_dollars
+            # is what was actually put in; cash_received is what actually came
+            # back (contracts * $1.00 on a full settlement, or contracts *
+            # exit_price on an early exit) -- pnl is just the difference.
+            stake = p.get("stake_dollars") or pt.PAPER_STAKE_DOLLARS
+            contracts = p.get("contracts")
+            if contracts:
+                cash_received = round(contracts * (p.get("exit_price") if p.get("exit_reason") == "early_profit_target" else 1.0), 2)
+            else:
+                cash_received = round(stake + p.get("hypothetical_pnl"), 2)
             recent_wins.append({
                 "name": p.get("picked_team"), "category": p.get("league", "?"),
                 "entry_price": p.get("entry_price") or 0, "exit_price": p.get("exit_price"),
                 "exit_reason": p.get("exit_reason"), "resolved_at": p.get("resolved_at", ""),
                 "pnl": p.get("hypothetical_pnl"),
+                "stake_dollars": round(stake, 2), "cash_received": cash_received,
             })
     recent_wins.sort(key=lambda w: w.get("resolved_at") or "", reverse=True)
 

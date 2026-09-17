@@ -293,6 +293,17 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
 
     paper_data = load_paper_trades()
     already_picked = {p["event_id"] for p in paper_data["moneyline"]}
+    # Real bug found 2026-09-17: SharpAPI's event_id for the same real-world
+    # game is NOT stable across separate odds-fetch calls on different days
+    # (confirmed live -- the same Kalshi market ended up picked 2-3 times
+    # under different event_ids, days apart). The already_picked check above
+    # relied entirely on that unstable id, so the same game kept getting
+    # re-picked as a brand-new "pending" bet -- and when it finally resolved,
+    # EVERY duplicate resolved at once, multiplying that one game's real
+    # win/loss by 2-3x in the paper bankroll. kalshi_ticker, by contrast, IS
+    # stable (it's Kalshi's own market identity, not the odds provider's) --
+    # dedupe on that too, as the real safety net.
+    already_picked_tickers = {p["kalshi_ticker"] for p in paper_data["moneyline"] if p.get("kalshi_ticker")}
     new_picks = []
 
     # Funnel counters -- added to see exactly WHERE games are getting
@@ -418,6 +429,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             funnel["no_qualifying_edge"] += 1
             continue  # no favorite cleared favorite_min_prob on either side -- skip
 
+        if best_pick["kalshi_ticker"] in already_picked_tickers:
+            funnel["already_picked"] += 1
+            continue  # same Kalshi market already has a pick on it under a different event_id
+
         # Edge requirement dropped entirely 2026-09-14 at the user's request --
         # this was a third, previously-missed gate requiring edge_pct > 0 (Kalshi
         # mispriced vs. consensus) on top of the favorite_min_prob check above.
@@ -498,6 +513,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         }
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
+        already_picked_tickers.add(pick["kalshi_ticker"])
 
     print(f"[{league}] moneyline funnel: {funnel}")
 
