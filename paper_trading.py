@@ -668,7 +668,13 @@ def track_moneyline_contract_prices(client):
 # (from entry price to $1.00) is already locked in -- 0.67 by default,
 # which is exactly the $25-of-$30 example above.
 MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
-MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO", "0.67"))
+# Was defaulted to 0.67, out of sync with worker.py's real-trading
+# PROFIT_CAPTURE_PCT (0.85) -- found 2026-09-17. The user set 85% as the
+# intended capture ratio; paper trading (which is what's actually
+# generating P&L data right now, since no real positions are open) had
+# silently been running its own, looser 67% this whole time. Brought back
+# in line with the real-trading value.
+MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO = float(os.getenv("MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO", "0.85"))
 
 
 def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
