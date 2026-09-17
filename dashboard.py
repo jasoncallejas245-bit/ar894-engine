@@ -338,52 +338,10 @@ PAGE_TEMPLATE = """
     {% endif %}
   </div>
 
-  <div class="card">
-    <h3>Real Kalshi Combo Trades</h3>
-    <div class="sub" style="margin-bottom:10px;">Real multi-leg Kalshi combo trades (via the RFQ system, see combo_trading.py) -- not a simulation. Currently {{ 'ON' if combo_real_trading_enabled else 'OFF' }} ({{ 'will place real trades when a good quote appears' if combo_real_trading_enabled else 'building/testing phase, not placing real trades yet' }}).</div>
-    {% if open_combo_positions or resolved_combo_trades %}
-      {% for c in open_combo_positions %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ c.legs|length }}-leg combo</strong> <span class="badge badge-bet">open</span></div>
-          <div class="sub">{{ c.legs|join(', ') }}</div>
-          <div class="sub">entry ${{ "%.4f"|format(c.entry_price) }} · {{ "%.2f"|format(c.count_fp) }} contracts · staked ${{ "%.2f"|format(c.entry_price * c.count_fp) }} · opened {{ c.opened_at }}</div>
-        </div>
-      </div>
-      {% endfor %}
-      {% for c in resolved_combo_trades %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ c.ticker }}</strong> <span class="badge">{{ c.note }}</span></div>
-          <div class="sub">{{ c.at }}</div>
-        </div>
-        <div class="{{ 'green' if c.pnl >= 0 else 'red' }}" style="white-space:nowrap;">${{ "%.2f"|format(c.pnl) }}</div>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="muted">No real combo trades yet.</div>
-    {% endif %}
-  </div>
-
-  <div class="card">
-    <h3>Paper Combo Dry-Runs</h3>
-    <div class="sub" style="margin-bottom:10px;">Uses the real Kalshi RFQ system to get genuine live quotes (safe -- never places an order) so the combo strategy builds a track record before real money is risked. {{ combo_dryrun_summary.resolved or 0 }} resolved{% if combo_dryrun_summary.win_rate is not none %} · {{ "%.0f"|format(combo_dryrun_summary.win_rate) }}% correct{% endif %}{% if combo_dryrun_bid_evidence_count %} · saw a live buy-back bid {{ combo_dryrun_bid_evidence_count }}x (early-exit evidence){% endif %}.</div>
-    {% if all_combo_dryrun_tickets %}
-      {% for t in all_combo_dryrun_tickets[:10] %}
-      <div class="row" style="align-items:flex-start; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:8px;">
-        <div>
-          <div><strong>{{ t.legs|join(' + ') }}</strong> <span class="badge">{{ t.status }}</span>{% if t.bid_ever_seen %} <span class="badge badge-bet">live bid seen!</span>{% endif %}</div>
-          <div class="sub">true combined prob {{ "%.0f"|format((t.true_combined_prob or 0)*100) }}%{% if t.quote_seen %} · quoted ${{ "%.4f"|format(t.quote_seen) }}{% else %} · no quote appeared{% endif %} · {{ t.picked_at }}</div>
-        </div>
-        <div class="{{ 'green' if t.status == 'won' else ('red' if t.status == 'lost' else 'muted') }}" style="white-space:nowrap;">
-          {% if t.get('hypothetical_pnl') is not none %}${{ "%.2f"|format(t.get('hypothetical_pnl')) }}{% else %}{{ t.status }}{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    {% else %}
-      <div class="muted">No paper combo dry-runs yet.</div>
-    {% endif %}
-  </div>
+  <!-- Real Kalshi Combo Trades / Paper Combo Dry-Runs cards removed from the
+       dashboard 2026-09-17, at the user's request (not part of the current
+       strategy focus) -- combo_trading.py and all its backend data/state
+       are left fully intact in case combo trading gets revisited later. -->
 
   <div class="card">
     <h3>Pending Picks — Live Countdown</h3>

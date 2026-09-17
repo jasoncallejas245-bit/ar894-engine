@@ -1279,18 +1279,19 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             trade_edge_pct = None
             trade_fair_prob = None
 
-            # Edge requirement dropped 2026-09-14, at the user's explicit
-            # request/confirmation -- real trading now only requires the
-            # favorite threshold (fair_prob >= favorite_min_prob), not a
-            # detected Kalshi-vs-consensus mispricing. clears_fee_adjusted_edge
-            # is no longer called here; MIN_EDGE_PCT is kept only for
-            # trade_edge_pct's stake-sizing scale (compute_stake_dollars),
-            # not as a gate.
+            # Edge requirement restored 2026-09-17, at the user's request --
+            # the 60%-only era (2026-09-14 to 2026-09-17) bet favorites at
+            # whatever price Kalshi charged with no required mispricing,
+            # which loses to fees on average even at a decent win rate
+            # (confirmed live in paper trading: 10-8 record, net -$51).
+            # Back to requiring clears_fee_adjusted_edge (a genuine
+            # Kalshi-vs-consensus mispricing with room after fees) ON TOP OF
+            # the favorite threshold, matching the original design.
             favorite_min_prob = get_favorite_min_prob()
             if yes_ask:
                 yes_price = float(yes_ask)
                 yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
-                if edge["fair_prob"] >= favorite_min_prob:
+                if clears_fee_adjusted_edge(yes_edge_pct, yes_price, MIN_EDGE_PCT) and edge["fair_prob"] >= favorite_min_prob:
                     side_to_trade = Side.YES
                     trade_price = yes_price
                     trade_edge_pct = yes_edge_pct
@@ -1300,7 +1301,7 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
                 no_price = float(no_ask)
                 fair_prob_no = 1 - edge["fair_prob"]
                 no_edge_pct = (fair_prob_no - no_price) * 100
-                if fair_prob_no >= favorite_min_prob:
+                if clears_fee_adjusted_edge(no_edge_pct, no_price, MIN_EDGE_PCT) and fair_prob_no >= favorite_min_prob:
                     side_to_trade = Side.NO
                     trade_price = no_price
                     trade_edge_pct = no_edge_pct

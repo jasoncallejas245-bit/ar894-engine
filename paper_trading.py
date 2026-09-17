@@ -407,16 +407,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             fair_prob = fair_probs[selection]
             edge_pct = (fair_prob - yes_price) * 100
 
-            # Edge requirement dropped 2026-09-14 here too, at the user's
-            # request -- this is the actual candidate-selection gate that
-            # was still silently requiring _clears_fee_adjusted_edge_local
-            # (a real Kalshi-vs-consensus mispricing + net edge after fees)
-            # even after the "strong" tier classification downstream was
-            # already relaxed to favorite-only. That's why zero picks were
-            # still being made after the first edge-removal change -- this
-            # was the real remaining gate. min_edge_pct is kept as a
-            # parameter (still passed in) but no longer checked.
-            if fair_prob >= favorite_min_prob:
+            # Edge requirement restored 2026-09-17, at the user's request --
+            # the 60%-only era (2026-09-14 to 2026-09-17) turned out to bet
+            # favorites at their fair Kalshi price with no real edge, which
+            # loses to fees on average even at a legitimately decent win
+            # rate (confirmed live: 10-8 record, net -$51). Back to requiring
+            # a genuine Kalshi-vs-consensus mispricing (clears fees with
+            # room to spare) ON TOP OF the favorite threshold, matching the
+            # original pre-2026-09-14 design.
+            if _clears_fee_adjusted_edge_local(edge_pct, yes_price, min_edge_pct) and fair_prob >= favorite_min_prob:
                 candidate = {
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
@@ -462,15 +461,15 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
         except Exception as e:
             print(f"[context_data] lookup failed for {away_team} @ {home_team}: {e}")
 
-        # Edge requirement dropped 2026-09-14, at the user's explicit
-        # request/confirmation -- "strong" now means ONLY the favorite
-        # threshold (market_probability >= real_favorite_min_prob), not a
-        # detected Kalshi-vs-consensus mispricing anymore. real_min_edge_pct
-        # is kept as a parameter (still passed in) but no longer checked
-        # here, so it's inert -- do not assume it still gates anything.
+        # Edge requirement restored 2026-09-17 (see note above) -- "strong"
+        # once again means a genuine Kalshi-vs-consensus mispricing that
+        # clears fees AND the favorite threshold, not favorite-only.
         manual_bet_candidate = None
-        if real_favorite_min_prob is not None:
-            manual_bet_candidate = best_pick["market_probability"] >= real_favorite_min_prob
+        if real_min_edge_pct is not None and real_favorite_min_prob is not None:
+            manual_bet_candidate = (
+                _clears_fee_adjusted_edge_local(best_pick["edge_pct"], best_pick["entry_price"], real_min_edge_pct)
+                and best_pick["market_probability"] >= real_favorite_min_prob
+            )
 
         # bet_tier ranks "bang for your buck" instead of a hard yes/no gate
         # (the zero/negative-edge case was already filtered out above).
