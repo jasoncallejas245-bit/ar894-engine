@@ -352,6 +352,7 @@ PAGE_TEMPLATE = """
         <div>
           <div><strong>{{ p.name }}</strong> <span class="badge">{{ p.category }}</span>{% set _tier = p.get('bet_tier') or ('strong' if p.get('manual_bet_candidate') else 'skip') %}{% if _tier == 'strong' %} <span class="badge badge-bet">🔥 strong -- bet this</span>{% elif _tier == 'thin' %} <span class="badge badge-thin">👍 thin edge -- your call</span>{% else %} <span class="badge badge-data">⚠ skip -- no edge</span>{% endif %}</div>
           <div class="sub">{{ p.opponent }} · contract price ${{ "%.2f"|format(p.entry_price) }} ({{ "%.0f"|format((p.entry_price or 0)*100) }}% implied) · <strong>$15 bet</strong>{% if p.get('potential_payout') is not none %} · pays <strong class="green">+${{ "%.2f"|format(p.potential_payout) }}</strong> if it hits{% endif %}</div>
+          {% if p.get('unrealized_pnl') is not none %}<div class="sub">Profit on the table right now: <strong class="{{ 'green' if p.unrealized_pnl > 0 else '' }}">{{ "+" if p.unrealized_pnl >= 0 else "" }}${{ "%.2f"|format(p.unrealized_pnl) }}</strong> ({{ p.captured_pct }}% of max possible) · holding for the real result, not cashing out early</div>{% endif %}
           <div class="score-bar"><div class="score-bar-fill" style="width:{{ p.get('pick_score', 0) }}%; background:hsl({{ (p.get('pick_score', 0) * 1.2)|round(0, 'floor')|int }}, 70%, 45%);"></div></div>
           <div class="sub">Picked {{ p.picked_at or "recently" }} · {{ p.timing_label }}: {{ p.timing_value or "unknown" }}</div>
         </div>
@@ -837,6 +838,22 @@ def dashboard():
             _contracts = max(1.0, pt.PAPER_STAKE_DOLLARS / _price)
             _fee = pt._kalshi_taker_fee_dollars_local(_price, _contracts)
             _payout = round((1.0 - _price) * _contracts - _fee, 2)
+        # Unrealized profit-so-far (2026-09-21, at the user's request, once
+        # early-exit was disabled): same captured-profit math as
+        # check_and_close_moneyline_paper_early, but display-only -- shows
+        # what's on the table right now without closing the position.
+        _unrealized_pnl = None
+        _captured_pct = None
+        _history = p.get("contract_price_history") or []
+        if _history and _price > 0 and _price < 1.0:
+            _latest = _history[-1]["price"]
+            _max_profit_per_contract = 1.0 - _price
+            _captured_per_contract = _latest - _price
+            _captured_pct = round((_captured_per_contract / _max_profit_per_contract) * 100, 1)
+            _contracts2 = max(1.0, pt.PAPER_STAKE_DOLLARS / _price)
+            _entry_fee = pt._kalshi_taker_fee_dollars_local(_price, _contracts2)
+            _exit_fee = pt._kalshi_taker_fee_dollars_local(_latest, _contracts2)
+            _unrealized_pnl = round(_contracts2 * _captured_per_contract - _entry_fee - _exit_fee, 2)
         pending_picks.append({
             "name": p.get("picked_team"), "category": p.get("league", "?"),
             "opponent": f"{p.get('away_team')} @ {p.get('home_team')}",
@@ -847,6 +864,8 @@ def dashboard():
             "bet_tier": p.get("bet_tier"),
             "pick_score": p.get("pick_score") or 0,
             "potential_payout": _payout,
+            "unrealized_pnl": _unrealized_pnl,
+            "captured_pct": _captured_pct,
         })
     # Ordered best-to-worst by pick_score (2026-09-11, at the user's
     # request) -- was in recency order before, which buried the strongest
