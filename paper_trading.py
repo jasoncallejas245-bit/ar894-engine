@@ -666,7 +666,12 @@ def track_moneyline_contract_prices(client):
 # MONEYLINE_PAPER_EARLY_EXIT_PROFIT_RATIO of the MAX POSSIBLE profit
 # (from entry price to $1.00) is already locked in -- 0.67 by default,
 # which is exactly the $25-of-$30 example above.
-MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "true").lower() == "true"
+# Disabled by default 2026-09-21 (user request) -- paper positions were
+# cashing out early (e.g. a $3 early exit) instead of holding to the real
+# game result, which hid what the strategy would actually have paid out
+# if held to resolution. Positions now hold to the real final outcome;
+# set MONEYLINE_PAPER_EARLY_EXIT_ENABLED=true to bring this back.
+MONEYLINE_PAPER_EARLY_EXIT_ENABLED = os.getenv("MONEYLINE_PAPER_EARLY_EXIT_ENABLED", "false").lower() == "true"
 # Was defaulted to 0.67, out of sync with worker.py's real-trading
 # PROFIT_CAPTURE_PCT (0.85) -- found 2026-09-17. The user set 85% as the
 # intended capture ratio; paper trading (which is what's actually
