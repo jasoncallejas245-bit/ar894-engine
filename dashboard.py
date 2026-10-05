@@ -290,6 +290,7 @@ PAGE_TEMPLATE = """
       <div class="sub" style="margin-top:2px;">↑ Would this strategy be making or losing money, if it were real?</div>
       {% if c.key == "moneyline" and c.bankroll_started %}<div class="sub" style="margin-top:2px;">Fresh start {{ c.bankroll_started }}: strong picks under the new edge rules only. Older results are kept in the archive.</div>{% endif %}
       {% if c.key == "moneyline" and c.maker_line %}<div class="sub" style="margin-top:2px;">{{ c.maker_line }}</div>{% endif %}
+      {% if c.key == "moneyline" and c.sharp_line %}<div class="sub" style="margin-top:2px;">{{ c.sharp_line }}</div>{% endif %}
 
       <div class="row" style="margin-top:14px;">
         <span class="label">How often it's right</span>
@@ -470,6 +471,20 @@ def _maker_line(bankroll):
             f"{len(filled)} of {len(picks)} orders filled, {len(done)} finished.")
 
 
+def _sharp_line(bankroll):
+    """One plain-English line for the Pinnacle-edge bankroll (sharp_odds.py)."""
+    import sharp_odds
+    st = sharp_odds.status()
+    if not st.get("enabled"):
+        return ""
+    picks = [p for p in pt.load_paper_trades().get("moneyline", []) if p.get("sharp_strong")]
+    done = [p for p in picks if p.get("status") in ("won", "lost")]
+    bal = bankroll.get("moneyline_sharp", {}).get("balance", pt.PAPER_STARTING_BANKROLL)
+    extra = f" API credits left: {st.get('remaining_credits')}." if st.get("remaining_credits") is not None else ""
+    err = f" Last error: {st['last_error']}" if st.get("last_error") else ""
+    return f"Pinnacle-edge version: ${bal:.2f} -- {len(picks)} picks, {len(done)} finished.{extra}{err}"
+
+
 @app.route("/")
 def dashboard():
     import paper_trading as pt
@@ -530,6 +545,7 @@ def dashboard():
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - ml_bank["balance"]),
             "bankroll_started": (ml_bank.get("started_at") or "")[:10],
             "maker_line": _maker_line(bankroll),
+            "sharp_line": _sharp_line(bankroll),
             "settings": [
                 {
                     "label": "How sure it must be to bet",
@@ -1384,6 +1400,13 @@ def circuit_breaker_status_route():
         "loss_limit_percent": ledger.MAX_LOSS_PERCENT,
         "allocated_budget": ledger.load_ledger().get("total_allocated", 0.0),
     }
+
+
+@app.route("/sharp_odds_status")
+def sharp_odds_status_route():
+    """Pinnacle feed status: on/off, credits left, last fetch per league."""
+    import sharp_odds
+    return sharp_odds.status()
 
 
 @app.route("/health")

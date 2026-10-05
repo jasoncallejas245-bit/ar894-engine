@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from state_io import atomic_write_json, safe_read_json
 import context_data
+import sharp_odds
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = os.path.join(DATA_DIR, "paper_trades.json")
@@ -382,6 +383,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
     for (event_id, side) in grouped.keys():
         by_event[event_id].add(side)
 
+    # Pinnacle (sharp) odds, if ODDS_API_KEY is configured -- see sharp_odds.py.
+    # Budget-aware: only actually calls the API when this league's cache is stale.
+    sharp_odds.refresh_if_stale(league)
+
     paper_data = load_paper_trades()
     already_picked = {p["event_id"] for p in paper_data["moneyline"]}
     # Real bug found 2026-09-17: SharpAPI's event_id for the same real-world
@@ -503,6 +508,18 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             fair_prob = blend_fair_prob(raw_fair_prob, yes_price)
             edge_pct = (fair_prob - yes_price) * 100
 
+            # Sharp (Pinnacle) view of the same selection, used UNBLENDED --
+            # Pinnacle is the benchmark Kalshi itself tends to follow, so a
+            # gap between the two is the signal we actually want to test.
+            sharp_prob = sharp_odds.sharp_fair_prob(league, away_team, home_team, selection)
+            sharp_edge_pct = (sharp_prob - yes_price) * 100 if sharp_prob is not None else None
+            sharp_ok = (
+                sharp_edge_pct is not None
+                and edge_is_plausible(sharp_edge_pct)
+                and _clears_fee_adjusted_edge_local(sharp_edge_pct, yes_price, real_min_edge_pct if real_min_edge_pct is not None else min_edge_pct)
+                and sharp_prob >= favorite_min_prob
+            )
+
             # Edge requirement restored 2026-09-17, at the user's request --
             # the 60%-only era (2026-09-14 to 2026-09-17) turned out to bet
             # favorites at their fair Kalshi price with no real edge, which
@@ -511,15 +528,16 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             # a genuine Kalshi-vs-consensus mispricing (clears fees with
             # room to spare) ON TOP OF the favorite threshold, matching the
             # original pre-2026-09-14 design.
-            if _clears_fee_adjusted_edge_local(edge_pct, yes_price, min_edge_pct) and fair_prob >= favorite_min_prob:
+            if (_clears_fee_adjusted_edge_local(edge_pct, yes_price, min_edge_pct) and fair_prob >= favorite_min_prob) or sharp_ok:
                 candidate = {
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
                     "edge_pct": edge_pct, "kalshi_ticker": match.ticker,
                     "raw_fair_prob": raw_fair_prob, "raw_edge_pct": raw_edge_pct,
                     "entry_bid": getattr(match, "yes_bid_dollars", None),
+                    "sharp_prob": sharp_prob, "sharp_edge_pct": sharp_edge_pct, "sharp_ok": sharp_ok,
                 }
-                if best_pick is None or edge_pct > best_pick["edge_pct"]:
+                if best_pick is None or (sharp_ok, edge_pct) > (best_pick["sharp_ok"], best_pick["edge_pct"]):
                     best_pick = candidate
 
         if best_pick is None:
@@ -597,6 +615,9 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "edge_pct": best_pick["edge_pct"],
             "raw_fair_prob": best_pick["raw_fair_prob"],
             "raw_edge_pct": best_pick["raw_edge_pct"],
+            "sharp_prob": best_pick["sharp_prob"],
+            "sharp_edge_pct": best_pick["sharp_edge_pct"],
+            "sharp_strong": bool(best_pick["sharp_ok"]),
             "kalshi_ticker": best_pick["kalshi_ticker"],
             "entry_price": best_pick["entry_price"],
             "picked_at": datetime.now().isoformat(),
@@ -610,7 +631,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "bet_tier": bet_tier,
             "pick_score": pick_score,
         }
-        if bet_tier == "strong":
+        if bet_tier == "strong" or pick["sharp_strong"]:
             _limit = maker_limit_price(best_pick.get("entry_bid"), best_pick["entry_price"])
             if _limit:
                 pick["maker"] = {"limit": _limit, "status": "resting", "placed_at": pick["picked_at"]}
@@ -702,6 +723,13 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
                 moneyline_bankroll_category(pick), pick["hypothetical_pnl"], pick.get("kalshi_ticker"),
                 note=f"{pick['league']} {pick['picked_team']} {pick['status']}",
             )
+            # Separate $100 bankroll for picks Pinnacle itself says have an
+            # edge -- the experiment that decides whether paid sharp data pays.
+            if pick.get("sharp_strong"):
+                record_paper_bankroll_change(
+                    "moneyline_sharp", pick["hypothetical_pnl"], pick.get("kalshi_ticker"),
+                    note=f"{pick['league']} {pick['picked_team']} {pick['status']} (Pinnacle edge {pick.get('sharp_edge_pct') or 0:+.1f}%)",
+                )
 
         if send_discord_fn and webhook:
             pnl_str = f"${pick['hypothetical_pnl']:+.2f}" if pick["hypothetical_pnl"] is not None else "N/A (no entry price captured)"

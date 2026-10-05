@@ -33,8 +33,15 @@ Picks made before 2026-10-05 used the old unblended math, so compare eras separa
 
 ## Data source limits + limit-order shadow test (2026-10-05)
 
-- **SharpAPI is on the Free tier:** only DraftKings + FanDuel, 60-second delayed, 12 requests/min (confirmed via `/debug_selections` and SharpAPI's tier docs). Our "consensus fair prob" is the average of just those two retail books. That's the most likely root cause of the overconfidence found in the 10/5 review -- Kalshi's price has been the better forecaster. Pinnacle (the usual sharp benchmark) needs SharpAPI's Sharp tier (paid); a paid data upgrade is the account owner's call.
+- **SharpAPI is on the Free tier:** only DraftKings + FanDuel, 60-second delayed, 12 requests/min (confirmed via `/debug_selections` and SharpAPI's tier docs). Our "consensus fair prob" is the average of just those two retail books. That's the most likely root cause of the overconfidence found in the 10/5 review -- Kalshi's price has been the better forecaster. Pinnacle (the usual sharp benchmark) needs SharpAPI Pro ($229/mo) or higher; The Odds API offers it far cheaper (see below). A paid data upgrade is the account owner's call.
 - **Limit-order ("maker") shadow test:** every strong pick also records `pick["maker"]` = a simulated resting buy 1¢ above the best bid (`maker_limit_price`). It fills only if a later observed ask drops to the limit before game start (`track_moneyline_contract_prices`, which now also logs `ask` in each history entry); it pays Kalshi's maker fee (`MAKER_FEE_RATE`, 0.0175, a quarter of taker) and goes to its own bankroll `moneyline_maker`. Purpose: measure whether switching real orders from taker to maker would make the strategy profitable after adverse selection. Paper only; the real order path is unchanged.
+
+## Pinnacle signal via The Odds API (2026-10-05)
+
+`sharp_odds.py` pulls Pinnacle moneyline odds from The Odds API (the-odds-api.com; Pinnacle is bookmaker key `pinnacle`, available on its free plan) -- far cheaper than SharpAPI Pro ($229/mo). Off unless `ODDS_API_KEY` is set in Railway. Budget knobs: `ODDS_API_LEAGUES` (default `nfl,ncaaf`), `ODDS_API_MIN_INTERVAL_MIN` (default 360 = every 6h, fits the free 500 credits/month; ~15 on the $30 20K plan), `ODDS_API_RESERVE_CREDITS` (stops fetching near zero). 1 credit per league fetch. Cache: `sharp_odds_cache.json`; status at `/sharp_odds_status`.
+- Every new pick stores `sharp_prob` / `sharp_edge_pct` (Pinnacle no-vig, unblended). A pick is also CREATED when Pinnacle alone clears the real-trading edge bar + favorite floor (`sharp_strong=True`), even if DK/FD don't.
+- `sharp_strong` picks feed their own $100 bankroll `moneyline_sharp` -- this is the test of whether paid sharp data pays for itself. They also get a maker shadow order, so `moneyline_maker` mixes strong + sharp_strong picks.
+- Real-money path is unchanged (still DK/FD blend, and still off).
 
 ## Current safety state (check this first — it changes)
 
