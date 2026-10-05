@@ -26,10 +26,48 @@ PAPER_STAKE_DOLLARS = float(os.getenv("PAPER_STAKE_DOLLARS", "15.0"))
 PAPER_STARTING_BANKROLL = float(os.getenv("PAPER_STARTING_BANKROLL", "100.0"))
 
 
+# 2026-10-05 fresh start (user's request): the "moneyline" bankroll restarts
+# at PAPER_STARTING_BANKROLL and from now on only counts STRONG-tier picks
+# made under the new edge rules (picks carrying raw_edge_pct -- see
+# MAX_PLAUSIBLE_EDGE_PCT / MODEL_WEIGHT). That's the set real money would
+# actually bet, so the balance answers "would the updated strategy make
+# money?". Nothing is deleted: the old running balance + history move to
+# "moneyline_v1_archive", older picks keep resolving into that archive,
+# and new thin-tier picks go to "moneyline_thin". paper_trades.json (every
+# pick ever) is untouched, so the learning step still sees all of it.
+BANKROLL_RESET_KEY = "reset_2026_10_05"
+
+
+def _migrate_bankroll_once(data):
+    if data.get(BANKROLL_RESET_KEY):
+        return data, False
+    old = data.get("moneyline")
+    if old is not None:
+        data["moneyline_v1_archive"] = old
+    data["moneyline"] = {
+        "balance": PAPER_STARTING_BANKROLL, "history": [],
+        "started_at": datetime.now().isoformat(),
+        "note": "Strong-tier picks under the 2026-10-05 edge rules only",
+    }
+    data[BANKROLL_RESET_KEY] = True
+    return data, True
+
+
 def load_paper_bankroll():
-    return safe_read_json(PAPER_BANKROLL_FILE, {
+    data = safe_read_json(PAPER_BANKROLL_FILE, {
         "moneyline": {"balance": PAPER_STARTING_BANKROLL, "history": []},
     })
+    data, migrated = _migrate_bankroll_once(data)
+    if migrated:
+        save_paper_bankroll(data)
+    return data
+
+
+def moneyline_bankroll_category(pick):
+    """Which bankroll a resolved moneyline pick counts toward (see above)."""
+    if pick.get("raw_edge_pct") is None:
+        return "moneyline_v1_archive"  # made before the 2026-10-05 rules
+    return "moneyline" if pick.get("bet_tier") == "strong" else "moneyline_thin"
 
 
 def save_paper_bankroll(data):
@@ -614,7 +652,7 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
         balance, is_down, down_by = (None, None, None)
         if pick["hypothetical_pnl"] is not None:
             balance, is_down, down_by = record_paper_bankroll_change(
-                "moneyline", pick["hypothetical_pnl"], pick.get("kalshi_ticker"),
+                moneyline_bankroll_category(pick), pick["hypothetical_pnl"], pick.get("kalshi_ticker"),
                 note=f"{pick['league']} {pick['picked_team']} {pick['status']}",
             )
 
@@ -780,7 +818,7 @@ def check_and_close_moneyline_paper_early(send_discord_fn=None, webhook=None):
             changed = True
 
             balance, is_down, down_by = record_paper_bankroll_change(
-                "moneyline", pnl, pick.get("kalshi_ticker"),
+                moneyline_bankroll_category(pick), pnl, pick.get("kalshi_ticker"),
                 note=f"{pick['league']} {pick['picked_team']} early-exit at ${latest:.2f}",
             )
             if send_discord_fn and webhook:

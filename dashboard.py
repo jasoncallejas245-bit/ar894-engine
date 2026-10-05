@@ -288,6 +288,7 @@ PAGE_TEMPLATE = """
       </div>
       <div class="sub">{% if c.bankroll_down %}Started with ${{ "%.0f"|format(paper_starting_bankroll) }} play money — currently DOWN ${{ "%.2f"|format(c.bankroll_down_by) }}{% else %}Started with ${{ "%.0f"|format(paper_starting_bankroll) }} play money — currently UP{% endif %}</div>
       <div class="sub" style="margin-top:2px;">↑ Would this strategy be making or losing money, if it were real?</div>
+      {% if c.key == "moneyline" and c.bankroll_started %}<div class="sub" style="margin-top:2px;">Fresh start {{ c.bankroll_started }}: strong picks under the new edge rules only. Older results are kept in the archive.</div>{% endif %}
 
       <div class="row" style="margin-top:14px;">
         <span class="label">How often it's right</span>
@@ -513,6 +514,7 @@ def dashboard():
             "bankroll_balance": ml_bank["balance"],
             "bankroll_down": ml_bank["balance"] < pt.PAPER_STARTING_BANKROLL,
             "bankroll_down_by": max(0.0, pt.PAPER_STARTING_BANKROLL - ml_bank["balance"]),
+            "bankroll_started": (ml_bank.get("started_at") or "")[:10],
             "settings": [
                 {
                     "label": "How sure it must be to bet",

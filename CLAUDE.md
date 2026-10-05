@@ -29,6 +29,7 @@ Review of 70 resolved paper picks (9/19-10/4): -$153 on $1,050 (-14.5%). Our con
 - `MODEL_WEIGHT` (default 0.5): fair prob is blended halfway toward Kalshi's price before edge/threshold checks. Picks now store `raw_fair_prob` / `raw_edge_pct` too; `market_probability` / `edge_pct` are the blended values.
 - `closing_price` / `closing_price_at`: last pregame bid, recorded by `track_moneyline_contract_prices`. Use `closing_price - entry_price` (closing line value) to judge whether picks have real edge before re-enabling real money.
 Picks made before 2026-10-05 used the old unblended math, so compare eras separately.
+- **Paper bankroll fresh start (2026-10-05, user's request):** `paper_bankroll.json`'s `moneyline` balance restarted at $100 and now counts only strong-tier picks made under these rules (`moneyline_bankroll_category`). The old balance/history moved to `moneyline_v1_archive` (old picks keep resolving there); new thin picks go to `moneyline_thin`. One-time migration flagged by `reset_2026_10_05`. `paper_trades.json` is untouched, so all history stays available to the learning step.
 
 ## Current safety state (check this first — it changes)
 
