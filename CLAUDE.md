@@ -22,6 +22,14 @@ A BTC 15-minute momentum strategy used to run alongside this. Removed entirely 2
 
 Repo: `github.com/jasoncallejas245-bit/ar894-engine`, branch `main`. Local clone lives at `~/ar894-engine` on the owner's Mac — that is the ONLY clone that matters.
 
+## Edge cap + Kalshi-price blend (2026-10-05)
+
+Review of 70 resolved paper picks (9/19-10/4): -$153 on $1,050 (-14.5%). Our consensus "fair" prob averaged 63% vs a 53% actual win rate (Kalshi's price implied 58%), and edges of 8%+ won only 31%. Strong tier was +$19 on 32 picks (noise-level); thin tier lost $172. Changes, shared by paper (`paper_trading.make_moneyline_paper_picks`) and real (`worker.py`) paths:
+- `MAX_PLAUSIBLE_EDGE_PCT` (default 7.0): raw edges above this are skipped as likely data mismatches (funnel key `suspect_edge`).
+- `MODEL_WEIGHT` (default 0.5): fair prob is blended halfway toward Kalshi's price before edge/threshold checks. Picks now store `raw_fair_prob` / `raw_edge_pct` too; `market_probability` / `edge_pct` are the blended values.
+- `closing_price` / `closing_price_at`: last pregame bid, recorded by `track_moneyline_contract_prices`. Use `closing_price - entry_price` (closing line value) to judge whether picks have real edge before re-enabling real money.
+Picks made before 2026-10-05 used the old unblended math, so compare eras separately.
+
 ## Current safety state (check this first — it changes)
 
 - `REAL_TRADING_LEAGUES` in `worker.py` is currently `set()` — **all real-money sports trading is paused**, for every league, including combo trading (which additionally requires its own `COMBO_REAL_TRADING_ENABLED` flag).

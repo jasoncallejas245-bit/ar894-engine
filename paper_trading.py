@@ -185,6 +185,31 @@ def _clears_fee_adjusted_edge_local(edge_pct, price_dollars, min_edge_pct):
     return (edge_pct - fee_pct) >= MIN_NET_EDGE_AFTER_FEE_PCT
 
 
+# Added 2026-10-05 after reviewing 70 resolved paper picks (9/19-10/4):
+# the sportsbook-consensus "fair" probability ran ~5 points too high on
+# average (predicted 63% win rate, actual 53% -- below even Kalshi's own
+# 58% implied price), and the biggest claimed edges did the WORST (8%+
+# edge: 31% win, -$88). Two fixes, both env-tunable:
+#  1. MAX_PLAUSIBLE_EDGE_PCT -- a raw edge this big is far more likely a
+#     data mismatch (wrong line / stale odds / bad team match) than a real
+#     mispricing on a liquid Kalshi market, so skip it.
+#  2. MODEL_WEIGHT -- blend our fair prob with Kalshi's price before
+#     computing edge (0.5 = halfway). Kalshi's price has been the better
+#     forecaster so far, so only trust half of any disagreement.
+MAX_PLAUSIBLE_EDGE_PCT = float(os.getenv("MAX_PLAUSIBLE_EDGE_PCT", "7.0"))
+MODEL_WEIGHT = float(os.getenv("MODEL_WEIGHT", "0.5"))
+
+
+def blend_fair_prob(fair_prob, price_dollars):
+    """Shrink our fair probability toward Kalshi's price by MODEL_WEIGHT."""
+    return price_dollars + MODEL_WEIGHT * (fair_prob - price_dollars)
+
+
+def edge_is_plausible(raw_edge_pct):
+    """False when the raw (unblended) edge is too big to be believable."""
+    return raw_edge_pct <= MAX_PLAUSIBLE_EDGE_PCT
+
+
 def _normalize_team_name_local(name):
     """
     Same normalization worker.py uses for Kalshi matching -- kept local
@@ -404,7 +429,12 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             if not yes_ask:
                 continue
             yes_price = float(yes_ask)
-            fair_prob = fair_probs[selection]
+            raw_fair_prob = fair_probs[selection]
+            raw_edge_pct = (raw_fair_prob - yes_price) * 100
+            if not edge_is_plausible(raw_edge_pct):
+                funnel["suspect_edge"] = funnel.get("suspect_edge", 0) + 1
+                continue
+            fair_prob = blend_fair_prob(raw_fair_prob, yes_price)
             edge_pct = (fair_prob - yes_price) * 100
 
             # Edge requirement restored 2026-09-17, at the user's request --
@@ -420,6 +450,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
                     "picked_team": selection, "side": "YES",
                     "market_probability": fair_prob, "entry_price": yes_price,
                     "edge_pct": edge_pct, "kalshi_ticker": match.ticker,
+                    "raw_fair_prob": raw_fair_prob, "raw_edge_pct": raw_edge_pct,
                 }
                 if best_pick is None or edge_pct > best_pick["edge_pct"]:
                     best_pick = candidate
@@ -497,6 +528,8 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "side": best_pick["side"],
             "market_probability": best_pick["market_probability"],
             "edge_pct": best_pick["edge_pct"],
+            "raw_fair_prob": best_pick["raw_fair_prob"],
+            "raw_edge_pct": best_pick["raw_edge_pct"],
             "kalshi_ticker": best_pick["kalshi_ticker"],
             "entry_price": best_pick["entry_price"],
             "picked_at": datetime.now().isoformat(),
@@ -605,6 +638,19 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
 MONEYLINE_CONTRACT_HISTORY_MAX = 30
 
 
+def _before_event_start(start_str):
+    """True if now (UTC) is before the event start time; False if unknown."""
+    if not start_str:
+        return False
+    try:
+        start = datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < start
+    except Exception:
+        return False
+
+
 def track_moneyline_contract_prices(client):
     """
     Runs on the fast cycle for every still-PENDING moneyline paper pick
@@ -634,6 +680,14 @@ def track_moneyline_contract_prices(client):
 
             pick.setdefault("contract_price_history", [])
             pick["contract_price_history"].append({"at": now_iso, "price": float(bid)})
+            # closing_price: last bid seen BEFORE the game starts. Kept as
+            # its own field because contract_price_history is capped at
+            # MONEYLINE_CONTRACT_HISTORY_MAX and loses the pregame prices.
+            # closing_price - entry_price (closing line value) is the fastest
+            # honest check of whether picks have a real edge.
+            if _before_event_start(pick.get("event_start_time")):
+                pick["closing_price"] = float(bid)
+                pick["closing_price_at"] = now_iso
             pick["contract_price_history"] = pick["contract_price_history"][-MONEYLINE_CONTRACT_HISTORY_MAX:]
             changed = True
 

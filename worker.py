@@ -1288,20 +1288,25 @@ def process_league_real_trading(client, league, seen_trades, sharpapi_rows):
             # Kalshi-vs-consensus mispricing with room after fees) ON TOP OF
             # the favorite threshold, matching the original design.
             favorite_min_prob = get_favorite_min_prob()
+            # Same plausibility cap + Kalshi-price blend as paper trading
+            # (pt.edge_is_plausible / pt.blend_fair_prob, added 2026-10-05).
             if yes_ask:
                 yes_price = float(yes_ask)
-                yes_edge_pct = (edge["fair_prob"] - yes_price) * 100
-                if clears_fee_adjusted_edge(yes_edge_pct, yes_price, MIN_EDGE_PCT) and edge["fair_prob"] >= favorite_min_prob:
+                raw_yes_edge = (edge["fair_prob"] - yes_price) * 100
+                yes_fair = pt.blend_fair_prob(edge["fair_prob"], yes_price)
+                yes_edge_pct = (yes_fair - yes_price) * 100
+                if pt.edge_is_plausible(raw_yes_edge) and clears_fee_adjusted_edge(yes_edge_pct, yes_price, MIN_EDGE_PCT) and yes_fair >= favorite_min_prob:
                     side_to_trade = Side.YES
                     trade_price = yes_price
                     trade_edge_pct = yes_edge_pct
-                    trade_fair_prob = edge["fair_prob"]
+                    trade_fair_prob = yes_fair
 
             if side_to_trade is None and no_ask:
                 no_price = float(no_ask)
-                fair_prob_no = 1 - edge["fair_prob"]
+                raw_no_edge = ((1 - edge["fair_prob"]) - no_price) * 100
+                fair_prob_no = pt.blend_fair_prob(1 - edge["fair_prob"], no_price)
                 no_edge_pct = (fair_prob_no - no_price) * 100
-                if clears_fee_adjusted_edge(no_edge_pct, no_price, MIN_EDGE_PCT) and fair_prob_no >= favorite_min_prob:
+                if pt.edge_is_plausible(raw_no_edge) and clears_fee_adjusted_edge(no_edge_pct, no_price, MIN_EDGE_PCT) and fair_prob_no >= favorite_min_prob:
                     side_to_trade = Side.NO
                     trade_price = no_price
                     trade_edge_pct = no_edge_pct
