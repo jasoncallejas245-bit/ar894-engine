@@ -486,7 +486,7 @@ def _sharp_line(bankroll):
     return f"Pinnacle-edge version: ${bal:.2f} -- {len(picks)} picks, {len(done)} finished.{extra}{err}"
 
 
-@app.route("/full")
+@app.route("/legacy")
 def dashboard():
     import paper_trading as pt
     import worker
@@ -1463,150 +1463,216 @@ def _review_data(include_all=False):
 HOME_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>AR894</title>
+<title>AR894 Engine</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
 <style>
 :root{--bg:#F5F6F8;--card:#fff;--ink:#171C26;--muted:#626B7C;--faint:#8A92A2;--line:#E3E6EC;--accent:#2F58CF;--ok:#227A4B;--warn:#B4471F;--warn-soft:#FCEEE7}
 @media (prefers-color-scheme:dark){:root{--bg:#101318;--card:#181C24;--ink:#E8EBF1;--muted:#9AA3B4;--faint:#727B8C;--line:#272D38;--accent:#86A2FF;--ok:#5CCB8E;--warn:#F2916A;--warn-soft:#35201A}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Instrument Sans",system-ui,-apple-system,sans-serif}
-.wrap{max-width:640px;margin:0 auto;padding:22px 16px 56px;display:flex;flex-direction:column;gap:24px}
+.wrap{max-width:760px;margin:0 auto;padding:22px 16px 56px;display:flex;flex-direction:column;gap:24px}
 .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
-h1{font-size:16px;margin:0;font-weight:700}
+h1{font-size:17px;margin:0;font-weight:700}
 .st{font-size:12.5px;color:var(--muted)}
 .st b{color:var(--ok)}.st b.bad{color:var(--warn)}
 .eyebrow{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
-.bal{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.vtag{font-size:11px;font-weight:700;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:5px;padding:2px 7px;margin-left:6px;vertical-align:2px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.card.main{grid-column:1/-1;border-left:4px solid var(--accent)}
-.card .v{font-size:22px;font-weight:700}
-.card.main .v{font-size:30px}
-.card .l{font-size:12.5px;color:var(--muted)}
+.ver{border-left:4px solid var(--accent)}
+.ver h2{font-size:16px;margin:0 0 6px}
+.ver ul{margin:0;padding-left:18px;font-size:14px;display:flex;flex-direction:column;gap:3px}
+.bal{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.bal .v{font-size:20px;font-weight:700}
+.bal .l{font-size:12px;color:var(--muted)}
 .up{color:var(--ok)}.down{color:var(--warn)}
-.tbl{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 14px}
+.tbl{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 14px;overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
-th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:8px 6px 6px 0;border-bottom:1px solid var(--line)}
-td{padding:8px 6px 8px 0;border-top:1px solid var(--line);vertical-align:top}
+th{text-align:left;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:9px 8px 6px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px 8px 8px 0;border-top:1px solid var(--line);vertical-align:top}
 tr:nth-child(2) td{border-top:0}
 td.r,th.r{text-align:right}
-.empty{color:var(--faint);font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:0}
-.badge{font-size:10.5px;font-weight:700;letter-spacing:.05em;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:5px;padding:1px 6px;margin-left:5px;white-space:nowrap}
+.sub{display:block;font-size:12px;color:var(--muted)}
+.empty{color:var(--faint);font-size:14px;margin:0}
+.badge{font-size:10.5px;font-weight:700;letter-spacing:.04em;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:5px;padding:1px 6px;margin-left:5px;white-space:nowrap}
+.badge.g{color:var(--muted);background:color-mix(in srgb,var(--muted) 14%,transparent)}
 .alert{background:var(--warn-soft);color:var(--warn);border-radius:12px;padding:10px 14px;font-size:14px;font-weight:600}
+.notes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:13.5px}
+.notes li{display:grid;grid-template-columns:92px 1fr;gap:8px}
+.notes .d{color:var(--muted)}
+details{background:var(--card);border:1px solid var(--line);border-radius:12px}
+details>summary{cursor:pointer;padding:11px 14px;font-weight:600;list-style:none;display:flex;justify-content:space-between}
+details>summary::-webkit-details-marker{display:none}
+details>summary::after{content:"+";color:var(--faint)}
+details[open]>summary::after{content:"−"}
+details .in{padding:0 14px 12px}
+.kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13.5px}
+.kv span:nth-child(odd){color:var(--muted)}
 .foot{font-size:12.5px;color:var(--faint)}
 .foot a{color:var(--accent)}
-@media (max-width:480px){.hide-sm{display:none}}
+@media (max-width:600px){.bal{grid-template-columns:repeat(2,1fr)}.hide-sm{display:none}.notes li{grid-template-columns:1fr}}
 </style></head><body><div class="wrap">
-<div class="top"><h1>AR894 Engine</h1>
-<span class="st">{% if h.halted %}<b class="bad">HALTED</b>{% elif h.stale %}<b class="bad">STALLED</b>{% else %}<b>● Running</b>{% endif %} · {{ "Practice only" if not real_on else "REAL MONEY ON" }} · checked {{ h_ago }}</span></div>
+
+<div class="top"><h1>AR894 Engine<span class="vtag">v{{ cur.v }}</span></h1>
+<span class="st">{% if h.halted %}<b class="bad">HALTED</b>{% elif h.stale %}<b class="bad">STALLED</b>{% else %}<b>● Running</b>{% endif %} · {{ "Practice only" if not real_on else "REAL MONEY ON" }} · last scan {{ h_ago }}</span></div>
 
 {% for a in alerts %}<div class="alert">{{ a }}</div>{% endfor %}
 
-<section><p class="eyebrow">Practice balances · started $100 each</p>
-<div class="bal">
-{% for b in balances %}<div class="card{{ ' main' if loop.first else '' }}"><div class="l">{{ b.label }}</div><div class="v mono {{ 'up' if b.value > 100 else ('down' if b.value < 100 else '') }}">${{ "%.2f"|format(b.value) }}</div><div class="l">{{ b.sub }}</div></div>{% endfor %}
-</div></section>
+<section class="card ver"><p class="eyebrow">Running now · since {{ cur.start }}</p><h2>v{{ cur.v }} · {{ cur.name }}</h2>
+<ul>{% for c in cur.changes %}<li>{{ c }}</li>{% endfor %}</ul></section>
+
+<section><p class="eyebrow">Practice balances (v{{ cur.v }}) · each started at $100</p>
+<div class="bal">{% for b in balances %}<div class="card"><div class="l">{{ b.label }}</div><div class="v mono {{ 'up' if b.value > 100 else ('down' if b.value < 100 else '') }}">${{ "%.2f"|format(b.value) }}</div><div class="l">{{ b.sub }}</div></div>{% endfor %}</div></section>
+
+<section><p class="eyebrow">Version scoreboard · strong + Pinnacle picks</p>
+<div class="tbl"><table><tr><th>Version</th><th class="r">Record</th><th class="r">Won</th><th class="r">Needed</th><th class="r hide-sm">Market moved</th><th class="r">P&amp;L</th><th class="r hide-sm">ROI</th></tr>
+{% for r in board %}<tr><td><b>v{{ r.v }}</b> <span class="sub">{{ r.name }}</span></td><td class="r mono">{{ r.rec }}</td><td class="r mono">{{ r.won }}</td><td class="r mono">{{ r.need }}</td><td class="r mono hide-sm">{{ r.clv }}</td><td class="r mono {{ r.cls }}">{{ r.pnl }}</td><td class="r mono hide-sm">{{ r.roi }}</td></tr>{% endfor %}
+</table></div>
+<p class="foot">Edge = "Won" beats "Needed" (Kalshi's price) and "Market moved" is positive (price moved our way before the game). Trust a version after ~30 finished picks.</p></section>
 
 <section><p class="eyebrow">Open picks · {{ open_picks|length }}</p>
-{% if open_picks %}<div class="tbl"><table><tr><th>Pick</th><th class="r">Paid</th><th class="r">Now</th><th class="r hide-sm">Game</th></tr>
-{% for p in open_picks %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span>{% if p.sharp %}<span class="badge">PIN</span>{% endif %}</td><td class="r mono">{{ p.paid }}</td><td class="r mono">{{ p.now }}</td><td class="r mono hide-sm">{{ p.when }}</td></tr>{% endfor %}
-</table></div>{% else %}<p class="empty">No open picks under the new rules yet.</p>{% endif %}</section>
+{% if open_picks %}<div class="tbl"><table><tr><th>Pick</th><th class="r">Paid</th><th class="r">Now</th><th class="r hide-sm">Bot</th><th class="r hide-sm">Pinnacle</th><th class="r hide-sm">Limit order</th><th class="r">Game</th></tr>
+{% for p in open_picks %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span>{% if p.sharp %}<span class="badge">PIN</span>{% endif %}<span class="badge g">v{{ p.v }}</span></td><td class="r mono">{{ p.paid }}</td><td class="r mono {{ p.now_cls }}">{{ p.now }}</td><td class="r mono hide-sm">{{ p.bot }}</td><td class="r mono hide-sm">{{ p.pin }}</td><td class="r hide-sm">{{ p.maker }}</td><td class="r mono">{{ p.when }}</td></tr>{% endfor %}
+</table></div>{% else %}<p class="empty card">No open picks yet under v{{ cur.v }}.</p>{% endif %}</section>
 
-<section><p class="eyebrow">Last finished · {{ recent|length }}</p>
-{% if recent %}<div class="tbl"><table><tr><th>Pick</th><th>Result</th><th class="r">P&amp;L</th></tr>
-{% for p in recent %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span></td><td>{{ p.result }}</td><td class="r mono {{ 'up' if p.pnl.startswith('+') else 'down' }}">{{ p.pnl }}</td></tr>{% endfor %}
-</table></div>{% else %}<p class="empty">Nothing finished yet under the new rules.</p>{% endif %}</section>
+<section><p class="eyebrow">Recent results</p>
+{% if recent %}<div class="tbl"><table><tr><th>Pick</th><th>Result</th><th class="r">Paid</th><th class="r">P&amp;L</th></tr>
+{% for p in recent %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span><span class="badge g">v{{ p.v }}</span><span class="sub">{{ p.date }}</span></td><td>{{ p.result }}</td><td class="r mono">{{ p.paid }}</td><td class="r mono {{ 'up' if p.pnl.startswith('+') else 'down' }}">{{ p.pnl }}</td></tr>{% endfor %}
+</table></div>{% else %}<p class="empty card">Nothing finished yet.</p>{% endif %}</section>
 
-<section><p class="eyebrow">Is there an edge yet?</p>
-<div class="tbl"><table><tr><th>Version</th><th class="r">Done</th><th class="r">Won</th><th class="r">Needed</th><th class="r">P&amp;L</th></tr>
-{% for r in edge_rows %}<tr><td>{{ r.name }}</td><td class="r mono">{{ r.n }}</td><td class="r mono">{{ r.won }}</td><td class="r mono">{{ r.need }}</td><td class="r mono">{{ r.pnl }}</td></tr>{% endfor %}
-</table></div>
-<p class="foot">"Won" vs "Needed": a version only has an edge if it wins more often than Kalshi's price said it would. Trust it after about 30 finished picks.</p></section>
+<section><p class="eyebrow">Engine notes</p>
+<div class="card">{% if notes %}<ul class="notes">{% for n in notes %}<li><span class="d mono">{{ n.d }}</span><span><span class="badge g">v{{ n.v }}</span> {{ n.text }}</span></li>{% endfor %}</ul>{% else %}<p class="empty">The engine writes a note when a version starts and a scoreboard once a day.</p>{% endif %}</div></section>
 
-<p class="foot">Pinnacle odds: {{ pin }} · Errors: {{ h.error_count_total }} · <a href="/full">Full details</a></p>
+<details><summary>By league (v{{ cur.v }})</summary><div class="in"><div class="tbl" style="border:0;padding:0"><table><tr><th>League</th><th class="r">Picks</th><th class="r">Finished</th><th class="r">Won</th><th class="r">P&amp;L</th></tr>
+{% for l in leagues %}<tr><td>{{ l.name }}</td><td class="r mono">{{ l.picks }}</td><td class="r mono">{{ l.resolved }}</td><td class="r mono">{{ l.won }}</td><td class="r mono">{{ l.pnl }}</td></tr>{% endfor %}</table></div></div></details>
+
+<details><summary>Version history</summary><div class="in">{% for v in versions %}<p style="margin:8px 0 2px"><b>v{{ v.v }} · {{ v.name }}</b> <span class="sub">{{ v.start }} → {{ v.end or "now" }}</span></p><ul style="margin:0;padding-left:18px;font-size:13.5px">{% for c in v.changes %}<li>{{ c }}</li>{% endfor %}</ul>{% if v.verdict %}<p class="sub" style="margin-top:4px">Result: {{ v.verdict }}</p>{% endif %}{% endfor %}</div></details>
+
+<details><summary>Settings &amp; data feeds</summary><div class="in"><div class="kv">
+{% for k, v in settings %}<span>{{ k }}</span><span class="mono">{{ v }}</span>{% endfor %}
+</div></div></details>
+
+<p class="foot">Updates every minute · <a href="/legacy">Old detailed page</a> · <a href="/review_stats">Raw numbers</a></p>
 </div></body></html>"""
 
 
-def _fmt_time(iso):
+def _fmt_time(iso, with_time=True):
     try:
         dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         from zoneinfo import ZoneInfo
         local = dt.astimezone(ZoneInfo("America/Los_Angeles"))
-        return local.strftime("%a %-m/%-d %-I:%M%p").replace(":00", "").lower().replace("am", "a").replace("pm", "p")
+        fmt = "%a %-m/%-d %-I:%M%p" if with_time else "%a %-m/%-d"
+        return local.strftime(fmt).replace(":00", "").replace("AM", "a").replace("PM", "p")
     except Exception:
         return "?"
+
+
+@app.route("/full")
+def full_redirect():
+    return redirect("/")
 
 
 @app.route("/")
 def home_minimal():
     """
-    Minimal black-and-white home page (2026-10-05, at the user's request):
-    only what matters at a glance. The old full page lives at /full.
+    Main page (rebuilt 2026-10-05 at the user's request): the clean,
+    complete view for the current strategy -- version, balances, a
+    version-vs-version scoreboard, open picks, results, the engine's own
+    notes, and settings. The previous long page is kept at /legacy.
     """
     import worker
+    import engine_notes
+    import strategy_versions as sv
     try:
         h = health_route()
     except Exception:
-        h = {"halted": False, "stale": False, "error_count_total": "?", "cycle_finished_at": None}
-    try:
-        secs = h.get("seconds_since_last_scan")
-        h_ago = f"{int(secs // 60)} min ago" if secs and secs >= 60 else "just now"
-    except Exception:
-        h_ago = "?"
+        h = {"halted": False, "stale": False, "error_count_total": "?"}
+    secs = h.get("seconds_since_last_scan")
+    h_ago = (f"{int(secs // 60)} min ago" if secs and secs >= 60 else "just now") if secs is not None else "?"
     real_on = bool(getattr(worker, "REAL_TRADING_LEAGUES", set()))
     rd = _review_data()
     bank = rd["bankrolls"]
+    cur = sv.get(sv.CURRENT_VERSION)
 
     def wl(key):
-        s = rd.get(key) or {}
-        return f"{s.get('resolved', 0)} finished, {s.get('pending', 0)} open"
-
+        x = rd.get(key) or {}
+        return f"{x.get('resolved', 0)} done · {x.get('pending', 0)} open"
     balances = [
         {"label": "Main (strong picks)", "value": bank.get("moneyline", pt.PAPER_STARTING_BANKROLL), "sub": wl("strong")},
         {"label": "Pinnacle edge", "value": bank.get("moneyline_sharp", pt.PAPER_STARTING_BANKROLL), "sub": wl("pinnacle_edge")},
-        {"label": "Limit orders", "value": bank.get("moneyline_maker", pt.PAPER_STARTING_BANKROLL),
-         "sub": f"{rd['maker']['filled']} of {rd['maker']['orders']} filled"},
-        {"label": "Weak picks (data only)", "value": bank.get("moneyline_thin", pt.PAPER_STARTING_BANKROLL), "sub": wl("thin")},
+        {"label": "Limit orders", "value": bank.get("moneyline_maker", pt.PAPER_STARTING_BANKROLL), "sub": f"{rd['maker']['filled']} of {rd['maker']['orders']} filled"},
+        {"label": "Weak picks", "value": bank.get("moneyline_thin", pt.PAPER_STARTING_BANKROLL), "sub": wl("thin")},
     ]
 
-    picks = [p for p in pt.load_paper_trades().get("moneyline", []) if p.get("raw_edge_pct") is not None]
-    shown = [p for p in picks if p.get("bet_tier") == "strong" or p.get("sharp_strong")]
+    all_picks = pt.load_paper_trades().get("moneyline", [])
+    sb = engine_notes.version_scoreboard(all_picks)
+    pct = lambda x: f"{x*100:.0f}%" if x is not None else "–"
+    board = []
+    for v in sorted(sb, reverse=True):
+        x = sb[v]
+        info = sv.get(v) or {}
+        board.append({"v": v, "name": info.get("name", ""), "rec": f"{x['won']}-{x['lost']}" + (f" (+{x['open']} open)" if x["open"] else ""),
+                      "won": pct(x["win_rate"]), "need": pct(x["needed"]),
+                      "clv": f"{x['clv_cents']:+.1f}¢" if x["clv_cents"] is not None else "–",
+                      "pnl": f"{x['pnl']:+.2f}", "cls": "up" if x["pnl"] > 0 else ("down" if x["pnl"] < 0 else ""),
+                      "roi": f"{x['roi']:+.1f}%" if x["roi"] is not None else "–"})
+
+    shown = [p for p in all_picks if p.get("bet_tier") == "strong" or p.get("sharp_strong")]
     open_picks = []
-    for p in sorted([p for p in shown if p.get("status") == "pending"], key=lambda x: x.get("event_start_time") or ""):
+    for p in sorted([p for p in shown if p.get("status") == "pending" and sv.version_of(p) == sv.CURRENT_VERSION],
+                    key=lambda x: x.get("event_start_time") or ""):
         hist = p.get("contract_price_history") or []
         now = hist[-1]["price"] if hist else None
+        mk = p.get("maker") or {}
         open_picks.append({
-            "team": p.get("picked_team"), "league": p.get("league"), "sharp": p.get("sharp_strong"),
+            "team": p.get("picked_team"), "league": p.get("league"), "sharp": p.get("sharp_strong"), "v": sv.version_of(p),
             "paid": f"{p['entry_price']*100:.0f}¢" if p.get("entry_price") else "–",
-            "now": f"{now*100:.0f}¢" if now else "–", "when": _fmt_time(p.get("event_start_time")),
+            "now": f"{now*100:.0f}¢" if now else "–",
+            "now_cls": ("up" if now and p.get("entry_price") and now > p["entry_price"] else ("down" if now and p.get("entry_price") and now < p["entry_price"] else "")),
+            "bot": pct(p.get("market_probability")), "pin": pct(p.get("sharp_prob")),
+            "maker": ({"filled": f"filled {mk.get('limit', 0)*100:.0f}¢", "resting": f"waiting {mk.get('limit', 0)*100:.0f}¢", "unfilled": "not filled"}.get(mk.get("status"), "–")),
+            "when": _fmt_time(p.get("event_start_time")),
         })
-    done = sorted([p for p in shown if p.get("status") in ("won", "lost")], key=lambda x: x.get("resolved_at") or "", reverse=True)[:10]
-    recent = [{"team": p.get("picked_team"), "league": p.get("league"), "result": p["status"].capitalize(),
+    done = sorted([p for p in shown if p.get("status") in ("won", "lost")], key=lambda x: x.get("resolved_at") or "", reverse=True)[:15]
+    recent = [{"team": p.get("picked_team"), "league": p.get("league"), "v": sv.version_of(p), "result": p["status"].capitalize(),
+               "paid": f"{p['entry_price']*100:.0f}¢" if p.get("entry_price") else "–",
+               "date": _fmt_time(p.get("resolved_at"), with_time=False),
                "pnl": f"{(p.get('hypothetical_pnl') or 0):+.2f}"} for p in done]
 
-    def edge_row(name, key):
-        s = rd.get(key) or {}
-        pct = lambda v: f"{v*100:.0f}%" if v is not None else "–"
-        return {"name": name, "n": s.get("resolved", 0), "won": pct(s.get("win_rate")),
-                "need": pct(s.get("kalshi_implied_win_rate")), "pnl": f"{s.get('pnl', 0):+.2f}"}
-    edge_rows = [edge_row("Main", "strong"), edge_row("Pinnacle edge", "pinnacle_edge"), edge_row("Weak picks", "thin")]
+    nd = engine_notes.load_notes()
+    notes = [{"d": _fmt_time(n.get("at"), with_time=False), "v": n.get("v"), "text": n.get("text")} for n in reversed(nd.get("notes", [])[-20:])]
+
+    leagues = []
+    for name, x in sorted((rd.get("by_league") or {}).items()):
+        leagues.append({"name": name, "picks": x.get("picks", 0), "resolved": x.get("resolved", 0),
+                        "won": pct(x.get("win_rate")), "pnl": f"{x.get('pnl', 0):+.2f}"})
 
     so = rd.get("sharp_odds") or {}
-    pin = ("off" if not so.get("enabled") else
-           f"on, {so.get('remaining_credits', '?')} free requests left" + (f" (error: {so['last_error']})" if so.get("last_error") else ""))
+    pin = ("off" if not so.get("enabled") else f"on · {so.get('remaining_credits', '?')} free requests left")
+    settings = [
+        ("Practice bet size", f"${pt.PAPER_STAKE_DOLLARS:.0f}"),
+        ("Must be at least this likely to win", f"{pt.get_effective_favorite_min_prob()*100:.0f}%"),
+        ("Edges bigger than this are skipped", f"{pt.MAX_PLAUSIBLE_EDGE_PCT:.0f}%"),
+        ("How much it trusts its own odds vs Kalshi", f"{pt.MODEL_WEIGHT*100:.0f}% / {100 - pt.MODEL_WEIGHT*100:.0f}%"),
+        ("DraftKings/FanDuel odds", "SharpAPI free plan (60s delayed)"),
+        ("Pinnacle odds", pin + (f" · error: {so['last_error']}" if so.get("last_error") else "")),
+        ("Limit-order fee rate", f"{pt.MAKER_FEE_RATE}"),
+        ("Errors logged", str(h.get("error_count_total"))),
+    ]
 
     alerts = []
     if h.get("halted"):
-        alerts.append(f"Engine halted: {h.get('halted_reason') or 'see full details'}.")
+        alerts.append(f"Engine halted: {h.get('halted_reason') or 'see the old detailed page'}.")
     if h.get("stale"):
         alerts.append("Engine hasn't finished a scan in a while. Check Railway.")
     if so.get("enabled") and isinstance(so.get("remaining_credits"), int) and so["remaining_credits"] < 60:
         alerts.append(f"Pinnacle free requests almost used up ({so['remaining_credits']} left).")
 
-    return render_template_string(HOME_TEMPLATE, h=h, h_ago=h_ago, real_on=real_on, balances=balances,
-                                  open_picks=open_picks, recent=recent, edge_rows=edge_rows, pin=pin, alerts=alerts)
+    return render_template_string(HOME_TEMPLATE, h=h, h_ago=h_ago, real_on=real_on, cur=cur, balances=balances, board=board,
+                                  open_picks=open_picks, recent=recent, notes=notes, leagues=leagues,
+                                  versions=list(reversed(sv.VERSIONS)), settings=settings, alerts=alerts)
 
 
 @app.route("/sharp_odds_status")

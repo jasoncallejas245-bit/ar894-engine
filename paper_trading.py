@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from state_io import atomic_write_json, safe_read_json
 import context_data
 import sharp_odds
+import strategy_versions
 
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ".")
 PAPER_TRADES_FILE = os.path.join(DATA_DIR, "paper_trades.json")
@@ -634,6 +635,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "manual_bet_candidate": manual_bet_candidate,
             "bet_tier": bet_tier,
             "pick_score": pick_score,
+            "strategy_version": strategy_versions.CURRENT_VERSION,
         }
         if bet_tier == "strong" or pick["sharp_strong"]:
             _limit = maker_limit_price(best_pick.get("entry_bid"), best_pick["entry_price"])

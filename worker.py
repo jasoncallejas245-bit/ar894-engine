@@ -1553,6 +1553,12 @@ def run_fast_cycle(client):
     except Exception as e:
         print(f"[adjust] moneyline threshold error: {e}")
 
+    try:
+        import engine_notes
+        engine_notes.maybe_daily_note(pt.load_paper_trades().get("moneyline", []))  # once a day: per-version scoreboard
+    except Exception as e:
+        print(f"[engine_notes] daily note error: {e}")
+
 
 def start_dashboard_thread():
     import threading
@@ -1571,6 +1577,11 @@ def main():
     real_status = "NONE (paused, 100% paper)" if not REAL_TRADING_LEAGUES else f"{sorted(REAL_TRADING_LEAGUES)}"
     print(f"--- Picks Autonomous Worker (real trading: {real_status} | paper: all leagues, learning-gated) ---")
     start_dashboard_thread()
+    try:
+        import engine_notes
+        engine_notes.note_version_start()  # logs "Now running vN" the first time a new strategy version goes live
+    except Exception as e:
+        print(f"[engine_notes] version note error: {e}")
     seen_trades = load_seen_trades()
     client = KalshiClient()
 

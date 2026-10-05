@@ -43,6 +43,12 @@ Picks made before 2026-10-05 used the old unblended math, so compare eras separa
 - `sharp_strong` picks feed their own $100 bankroll `moneyline_sharp` -- this is the test of whether paid sharp data pays for itself. They also get a maker shadow order, so `moneyline_maker` mixes strong + sharp_strong picks.
 - Real-money path is unchanged (still DK/FD blend, and still off).
 
+## Strategy versions + engine notes (2026-10-05, user's request)
+
+- `strategy_versions.py`: numbered log of every pick-logic change (v1 = DK/FD average 9/13–10/5, v2 = 10/5 edge cap/blend/Pinnacle/limit-order tests). **Any change to how picks are made = append a new version and bump `CURRENT_VERSION`.** New picks carry `strategy_version`; `version_of()` infers older ones.
+- `engine_notes.py`: the engine's own dated notebook (`engine_notes.json`): a note when a new version first runs (worker start) and a per-version scoreboard once a day (fast cycle).
+- Dashboard `/` is now the clean full view (version card, balances, version scoreboard, open picks with bot/Pinnacle odds and limit-order status, results, notes, settings). The old page is at `/legacy`; `/full` redirects to `/`.
+
 ## Current safety state (check this first — it changes)
 
 - `REAL_TRADING_LEAGUES` in `worker.py` is currently `set()` — **all real-money sports trading is paused**, for every league, including combo trading (which additionally requires its own `COMBO_REAL_TRADING_ENABLED` flag).
