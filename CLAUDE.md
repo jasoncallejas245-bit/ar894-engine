@@ -31,6 +31,11 @@ Review of 70 resolved paper picks (9/19-10/4): -$153 on $1,050 (-14.5%). Our con
 Picks made before 2026-10-05 used the old unblended math, so compare eras separately.
 - **Paper bankroll fresh start (2026-10-05, user's request):** `paper_bankroll.json`'s `moneyline` balance restarted at $100 and now counts only strong-tier picks made under these rules (`moneyline_bankroll_category`). The old balance/history moved to `moneyline_v1_archive` (old picks keep resolving there); new thin picks go to `moneyline_thin`. One-time migration flagged by `reset_2026_10_05`. `paper_trades.json` is untouched, so all history stays available to the learning step.
 
+## Data source limits + limit-order shadow test (2026-10-05)
+
+- **SharpAPI is on the Free tier:** only DraftKings + FanDuel, 60-second delayed, 12 requests/min (confirmed via `/debug_selections` and SharpAPI's tier docs). Our "consensus fair prob" is the average of just those two retail books. That's the most likely root cause of the overconfidence found in the 10/5 review -- Kalshi's price has been the better forecaster. Pinnacle (the usual sharp benchmark) needs SharpAPI's Sharp tier (paid); a paid data upgrade is the account owner's call.
+- **Limit-order ("maker") shadow test:** every strong pick also records `pick["maker"]` = a simulated resting buy 1¢ above the best bid (`maker_limit_price`). It fills only if a later observed ask drops to the limit before game start (`track_moneyline_contract_prices`, which now also logs `ask` in each history entry); it pays Kalshi's maker fee (`MAKER_FEE_RATE`, 0.0175, a quarter of taker) and goes to its own bankroll `moneyline_maker`. Purpose: measure whether switching real orders from taker to maker would make the strategy profitable after adverse selection. Paper only; the real order path is unchanged.
+
 ## Current safety state (check this first — it changes)
 
 - `REAL_TRADING_LEAGUES` in `worker.py` is currently `set()` — **all real-money sports trading is paused**, for every league, including combo trading (which additionally requires its own `COMBO_REAL_TRADING_ENABLED` flag).

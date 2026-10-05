@@ -213,6 +213,34 @@ def _kalshi_taker_fee_dollars_local(price_dollars, contracts=1.0):
 MIN_NET_EDGE_AFTER_FEE_PCT = float(os.getenv("MIN_NET_EDGE_AFTER_FEE_PCT", "1.0"))
 
 
+# Limit-order ("maker") shadow test, added 2026-10-05. Every strong pick
+# also records what would happen if, instead of paying the ask right away
+# (taker), the bot rested a buy order 1 cent above the best bid. A resting
+# order pays Kalshi's maker fee (0.0175 x C x P x (1-P), a quarter of the
+# taker fee; some series charge none) and skips the bid/ask spread -- but
+# it only fills if a seller comes down to our price, and it often fills
+# exactly when the market moves against us. This tracks both effects
+# honestly in its own bankroll ("moneyline_maker") so we can see whether
+# switching real orders to limit orders would turn the strategy positive.
+MAKER_FEE_RATE = float(os.getenv("MAKER_FEE_RATE", "0.0175"))
+
+
+def _kalshi_maker_fee_dollars_local(price_dollars, contracts=1.0):
+    raw = MAKER_FEE_RATE * contracts * price_dollars * (1 - price_dollars)
+    return math.ceil(raw * 10000) / 10000.0
+
+
+def maker_limit_price(bid, ask):
+    """1 cent above the best bid, never at or above the ask. None if no room."""
+    try:
+        bid, ask = float(bid or 0), float(ask or 0)
+    except (TypeError, ValueError):
+        return None
+    if bid <= 0 or ask <= 0 or ask - bid < 0.015:
+        return None
+    return round(min(ask - 0.01, bid + 0.01), 2)
+
+
 def _clears_fee_adjusted_edge_local(edge_pct, price_dollars, min_edge_pct):
     """Same logic as worker.clears_fee_adjusted_edge -- local copy to avoid
     a circular import. True if edge_pct clears the raw threshold AND still
@@ -489,6 +517,7 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
                     "market_probability": fair_prob, "entry_price": yes_price,
                     "edge_pct": edge_pct, "kalshi_ticker": match.ticker,
                     "raw_fair_prob": raw_fair_prob, "raw_edge_pct": raw_edge_pct,
+                    "entry_bid": getattr(match, "yes_bid_dollars", None),
                 }
                 if best_pick is None or edge_pct > best_pick["edge_pct"]:
                     best_pick = candidate
@@ -581,6 +610,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "bet_tier": bet_tier,
             "pick_score": pick_score,
         }
+        if bet_tier == "strong":
+            _limit = maker_limit_price(best_pick.get("entry_bid"), best_pick["entry_price"])
+            if _limit:
+                pick["maker"] = {"limit": _limit, "status": "resting", "placed_at": pick["picked_at"]}
         paper_data["moneyline"].append(pick)
         new_picks.append(pick)
         already_picked_tickers.add(pick["kalshi_ticker"])
@@ -649,6 +682,20 @@ def resolve_moneyline_paper_trades(client, send_discord_fn=None, webhook=None):
 
         changed = True
 
+        maker = pick.get("maker")
+        if maker:
+            if maker.get("status") == "filled":
+                lp = maker["limit"]
+                mc = max(1.0, PAPER_STAKE_DOLLARS / lp)
+                maker["contracts"] = mc
+                maker["pnl"] = round(((1.0 - lp) * mc if won else -lp * mc) - _kalshi_maker_fee_dollars_local(lp, mc), 4)
+                record_paper_bankroll_change(
+                    "moneyline_maker", maker["pnl"], pick.get("kalshi_ticker"),
+                    note=f"{pick['league']} {pick['picked_team']} {pick['status']} (limit ${lp:.2f})",
+                )
+            elif maker.get("status") == "resting":
+                maker["status"] = "unfilled"
+
         balance, is_down, down_by = (None, None, None)
         if pick["hypothetical_pnl"] is not None:
             balance, is_down, down_by = record_paper_bankroll_change(
@@ -713,11 +760,24 @@ def track_moneyline_contract_prices(client):
                 continue
 
             bid = getattr(market, "yes_bid_dollars", None)
+            ask = getattr(market, "yes_ask_dollars", None)
+            maker = pick.get("maker")
+            if maker and maker.get("status") == "resting":
+                if not _before_event_start(pick.get("event_start_time")):
+                    maker["status"] = "unfilled"  # game started, order would be cancelled
+                    changed = True
+                elif ask and float(ask) <= maker["limit"]:
+                    maker["status"] = "filled"
+                    maker["filled_at"] = now_iso
+                    changed = True
             if not bid:
                 continue
 
             pick.setdefault("contract_price_history", [])
-            pick["contract_price_history"].append({"at": now_iso, "price": float(bid)})
+            entry = {"at": now_iso, "price": float(bid)}
+            if ask:
+                entry["ask"] = float(ask)
+            pick["contract_price_history"].append(entry)
             # closing_price: last bid seen BEFORE the game starts. Kept as
             # its own field because contract_price_history is capped at
             # MONEYLINE_CONTRACT_HISTORY_MAX and loses the pregame prices.
