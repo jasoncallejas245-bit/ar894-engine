@@ -147,6 +147,17 @@ def sharp_fair_prob(league, away_team, home_team, selection):
     return None
 
 
+def sharp_age_minutes(league):
+    """How old this league's cached Pinnacle odds are, in minutes (None if never fetched)."""
+    try:
+        fetched = (_load_cache()["leagues"].get((league or "").lower()) or {}).get("fetched_at")
+        if not fetched:
+            return None
+        return round((datetime.now(timezone.utc) - datetime.fromisoformat(fetched)).total_seconds() / 60, 1)
+    except Exception:
+        return None
+
+
 def status():
     """Small summary for the dashboard."""
     if not enabled():

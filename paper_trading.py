@@ -618,6 +618,10 @@ def make_moneyline_paper_picks(league, sharpapi_rows, kalshi_events, safe_match_
             "sharp_prob": best_pick["sharp_prob"],
             "sharp_edge_pct": best_pick["sharp_edge_pct"],
             "sharp_strong": bool(best_pick["sharp_ok"]),
+            # How stale the Pinnacle number was when this pick was made --
+            # on the free plan it can be hours old, so later reviews can
+            # check whether only fresh Pinnacle edges hold up.
+            "sharp_age_min": sharp_odds.sharp_age_minutes(league) if best_pick["sharp_prob"] is not None else None,
             "kalshi_ticker": best_pick["kalshi_ticker"],
             "entry_price": best_pick["entry_price"],
             "picked_at": datetime.now().isoformat(),

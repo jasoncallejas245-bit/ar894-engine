@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 from flask import Flask, render_template_string, request, redirect
+import paper_trading as pt  # module-level: helper functions outside routes use it too
 from pykalshi import KalshiClient
 
 import ledger
@@ -1399,6 +1400,59 @@ def circuit_breaker_status_route():
         "current_realized_loss_pct": ledger.get_realized_loss_pct(),
         "loss_limit_percent": ledger.MAX_LOSS_PERCENT,
         "allocated_budget": ledger.load_ledger().get("total_allocated", 0.0),
+    }
+
+
+@app.route("/review_stats")
+def review_stats_route():
+    """
+    Compact, pre-computed numbers for the daily automated review (added
+    2026-10-05) -- so the reviewer doesn't have to download and crunch the
+    full multi-MB pick history. Only covers moneyline picks made under the
+    2026-10-05 rules (they carry raw_edge_pct) unless ?all=1.
+    """
+    import sharp_odds
+    picks = pt.load_paper_trades().get("moneyline", [])
+    if request.args.get("all") != "1":
+        picks = [p for p in picks if p.get("raw_edge_pct") is not None]
+
+    def summarize(rows):
+        done = [p for p in rows if p.get("status") in ("won", "lost")]
+        wins = sum(1 for p in done if p["status"] == "won")
+        clv = [p["closing_price"] - p["entry_price"] for p in done if p.get("closing_price") is not None and p.get("entry_price")]
+        pnl = sum(p.get("hypothetical_pnl") or 0 for p in done)
+        stake = sum(p.get("stake_dollars") or 0 for p in done)
+        return {
+            "picks": len(rows), "resolved": len(done), "pending": len(rows) - len(done),
+            "win_rate": round(wins / len(done), 3) if done else None,
+            "predicted_win_rate": round(sum(p.get("market_probability") or 0 for p in done) / len(done), 3) if done else None,
+            "kalshi_implied_win_rate": round(sum(p.get("entry_price") or 0 for p in done) / len(done), 3) if done else None,
+            "pnl": round(pnl, 2), "roi_pct": round(pnl / stake * 100, 1) if stake else None,
+            "avg_clv_cents": round(sum(clv) / len(clv) * 100, 2) if clv else None, "clv_n": len(clv),
+        }
+
+    maker_rows = [p for p in picks if p.get("maker")]
+    maker_done = [p for p in maker_rows if p["maker"].get("pnl") is not None]
+    bankroll = pt.load_paper_bankroll()
+    by_league = {}
+    for p in picks:
+        by_league.setdefault(p.get("league", "?"), []).append(p)
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "bankrolls": {k: round(v.get("balance", 0), 2) for k, v in bankroll.items() if isinstance(v, dict) and "balance" in v},
+        "strong": summarize([p for p in picks if p.get("bet_tier") == "strong"]),
+        "thin": summarize([p for p in picks if p.get("bet_tier") == "thin"]),
+        "pinnacle_edge": summarize([p for p in picks if p.get("sharp_strong")]),
+        "has_pinnacle_number": summarize([p for p in picks if p.get("sharp_prob") is not None]),
+        "maker": {
+            "orders": len(maker_rows),
+            "filled": sum(1 for p in maker_rows if p["maker"].get("status") == "filled"),
+            "unfilled": sum(1 for p in maker_rows if p["maker"].get("status") == "unfilled"),
+            "resolved": len(maker_done),
+            "pnl": round(sum(p["maker"]["pnl"] for p in maker_done), 2),
+        },
+        "by_league": {k: summarize(v) for k, v in by_league.items()},
+        "sharp_odds": sharp_odds.status(),
     }
 
 
