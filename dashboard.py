@@ -486,7 +486,7 @@ def _sharp_line(bankroll):
     return f"Pinnacle-edge version: ${bal:.2f} -- {len(picks)} picks, {len(done)} finished.{extra}{err}"
 
 
-@app.route("/")
+@app.route("/full")
 def dashboard():
     import paper_trading as pt
     import worker
@@ -1405,6 +1405,10 @@ def circuit_breaker_status_route():
 
 @app.route("/review_stats")
 def review_stats_route():
+    return _review_data(request.args.get("all") == "1")
+
+
+def _review_data(include_all=False):
     """
     Compact, pre-computed numbers for the daily automated review (added
     2026-10-05) -- so the reviewer doesn't have to download and crunch the
@@ -1413,7 +1417,7 @@ def review_stats_route():
     """
     import sharp_odds
     picks = pt.load_paper_trades().get("moneyline", [])
-    if request.args.get("all") != "1":
+    if not include_all:
         picks = [p for p in picks if p.get("raw_edge_pct") is not None]
 
     def summarize(rows):
@@ -1454,6 +1458,155 @@ def review_stats_route():
         "by_league": {k: summarize(v) for k, v in by_league.items()},
         "sharp_odds": sharp_odds.status(),
     }
+
+
+HOME_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>AR894</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+:root{--bg:#F5F6F8;--card:#fff;--ink:#171C26;--muted:#626B7C;--faint:#8A92A2;--line:#E3E6EC;--accent:#2F58CF;--ok:#227A4B;--warn:#B4471F;--warn-soft:#FCEEE7}
+@media (prefers-color-scheme:dark){:root{--bg:#101318;--card:#181C24;--ink:#E8EBF1;--muted:#9AA3B4;--faint:#727B8C;--line:#272D38;--accent:#86A2FF;--ok:#5CCB8E;--warn:#F2916A;--warn-soft:#35201A}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Instrument Sans",system-ui,-apple-system,sans-serif}
+.wrap{max-width:640px;margin:0 auto;padding:22px 16px 56px;display:flex;flex-direction:column;gap:24px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+h1{font-size:16px;margin:0;font-weight:700}
+.st{font-size:12.5px;color:var(--muted)}
+.st b{color:var(--ok)}.st b.bad{color:var(--warn)}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.bal{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card.main{grid-column:1/-1;border-left:4px solid var(--accent)}
+.card .v{font-size:22px;font-weight:700}
+.card.main .v{font-size:30px}
+.card .l{font-size:12.5px;color:var(--muted)}
+.up{color:var(--ok)}.down{color:var(--warn)}
+.tbl{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 14px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700;padding:8px 6px 6px 0;border-bottom:1px solid var(--line)}
+td{padding:8px 6px 8px 0;border-top:1px solid var(--line);vertical-align:top}
+tr:nth-child(2) td{border-top:0}
+td.r,th.r{text-align:right}
+.empty{color:var(--faint);font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:0}
+.badge{font-size:10.5px;font-weight:700;letter-spacing:.05em;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:5px;padding:1px 6px;margin-left:5px;white-space:nowrap}
+.alert{background:var(--warn-soft);color:var(--warn);border-radius:12px;padding:10px 14px;font-size:14px;font-weight:600}
+.foot{font-size:12.5px;color:var(--faint)}
+.foot a{color:var(--accent)}
+@media (max-width:480px){.hide-sm{display:none}}
+</style></head><body><div class="wrap">
+<div class="top"><h1>AR894 Engine</h1>
+<span class="st">{% if h.halted %}<b class="bad">HALTED</b>{% elif h.stale %}<b class="bad">STALLED</b>{% else %}<b>● Running</b>{% endif %} · {{ "Practice only" if not real_on else "REAL MONEY ON" }} · checked {{ h_ago }}</span></div>
+
+{% for a in alerts %}<div class="alert">{{ a }}</div>{% endfor %}
+
+<section><p class="eyebrow">Practice balances · started $100 each</p>
+<div class="bal">
+{% for b in balances %}<div class="card{{ ' main' if loop.first else '' }}"><div class="l">{{ b.label }}</div><div class="v mono {{ 'up' if b.value > 100 else ('down' if b.value < 100 else '') }}">${{ "%.2f"|format(b.value) }}</div><div class="l">{{ b.sub }}</div></div>{% endfor %}
+</div></section>
+
+<section><p class="eyebrow">Open picks · {{ open_picks|length }}</p>
+{% if open_picks %}<div class="tbl"><table><tr><th>Pick</th><th class="r">Paid</th><th class="r">Now</th><th class="r hide-sm">Game</th></tr>
+{% for p in open_picks %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span>{% if p.sharp %}<span class="badge">PIN</span>{% endif %}</td><td class="r mono">{{ p.paid }}</td><td class="r mono">{{ p.now }}</td><td class="r mono hide-sm">{{ p.when }}</td></tr>{% endfor %}
+</table></div>{% else %}<p class="empty">No open picks under the new rules yet.</p>{% endif %}</section>
+
+<section><p class="eyebrow">Last finished · {{ recent|length }}</p>
+{% if recent %}<div class="tbl"><table><tr><th>Pick</th><th>Result</th><th class="r">P&amp;L</th></tr>
+{% for p in recent %}<tr><td>{{ p.team }}<span class="badge">{{ p.league }}</span></td><td>{{ p.result }}</td><td class="r mono {{ 'up' if p.pnl.startswith('+') else 'down' }}">{{ p.pnl }}</td></tr>{% endfor %}
+</table></div>{% else %}<p class="empty">Nothing finished yet under the new rules.</p>{% endif %}</section>
+
+<section><p class="eyebrow">Is there an edge yet?</p>
+<div class="tbl"><table><tr><th>Version</th><th class="r">Done</th><th class="r">Won</th><th class="r">Needed</th><th class="r">P&amp;L</th></tr>
+{% for r in edge_rows %}<tr><td>{{ r.name }}</td><td class="r mono">{{ r.n }}</td><td class="r mono">{{ r.won }}</td><td class="r mono">{{ r.need }}</td><td class="r mono">{{ r.pnl }}</td></tr>{% endfor %}
+</table></div>
+<p class="foot">"Won" vs "Needed": a version only has an edge if it wins more often than Kalshi's price said it would. Trust it after about 30 finished picks.</p></section>
+
+<p class="foot">Pinnacle odds: {{ pin }} · Errors: {{ h.error_count_total }} · <a href="/full">Full details</a></p>
+</div></body></html>"""
+
+
+def _fmt_time(iso):
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo("America/Los_Angeles"))
+        return local.strftime("%a %-m/%-d %-I:%M%p").replace(":00", "").lower().replace("am", "a").replace("pm", "p")
+    except Exception:
+        return "?"
+
+
+@app.route("/")
+def home_minimal():
+    """
+    Minimal black-and-white home page (2026-10-05, at the user's request):
+    only what matters at a glance. The old full page lives at /full.
+    """
+    import worker
+    try:
+        h = health_route()
+    except Exception:
+        h = {"halted": False, "stale": False, "error_count_total": "?", "cycle_finished_at": None}
+    try:
+        secs = h.get("seconds_since_last_scan")
+        h_ago = f"{int(secs // 60)} min ago" if secs and secs >= 60 else "just now"
+    except Exception:
+        h_ago = "?"
+    real_on = bool(getattr(worker, "REAL_TRADING_LEAGUES", set()))
+    rd = _review_data()
+    bank = rd["bankrolls"]
+
+    def wl(key):
+        s = rd.get(key) or {}
+        return f"{s.get('resolved', 0)} finished, {s.get('pending', 0)} open"
+
+    balances = [
+        {"label": "Main (strong picks)", "value": bank.get("moneyline", pt.PAPER_STARTING_BANKROLL), "sub": wl("strong")},
+        {"label": "Pinnacle edge", "value": bank.get("moneyline_sharp", pt.PAPER_STARTING_BANKROLL), "sub": wl("pinnacle_edge")},
+        {"label": "Limit orders", "value": bank.get("moneyline_maker", pt.PAPER_STARTING_BANKROLL),
+         "sub": f"{rd['maker']['filled']} of {rd['maker']['orders']} filled"},
+        {"label": "Weak picks (data only)", "value": bank.get("moneyline_thin", pt.PAPER_STARTING_BANKROLL), "sub": wl("thin")},
+    ]
+
+    picks = [p for p in pt.load_paper_trades().get("moneyline", []) if p.get("raw_edge_pct") is not None]
+    shown = [p for p in picks if p.get("bet_tier") == "strong" or p.get("sharp_strong")]
+    open_picks = []
+    for p in sorted([p for p in shown if p.get("status") == "pending"], key=lambda x: x.get("event_start_time") or ""):
+        hist = p.get("contract_price_history") or []
+        now = hist[-1]["price"] if hist else None
+        open_picks.append({
+            "team": p.get("picked_team"), "league": p.get("league"), "sharp": p.get("sharp_strong"),
+            "paid": f"{p['entry_price']*100:.0f}¢" if p.get("entry_price") else "–",
+            "now": f"{now*100:.0f}¢" if now else "–", "when": _fmt_time(p.get("event_start_time")),
+        })
+    done = sorted([p for p in shown if p.get("status") in ("won", "lost")], key=lambda x: x.get("resolved_at") or "", reverse=True)[:10]
+    recent = [{"team": p.get("picked_team"), "league": p.get("league"), "result": p["status"].capitalize(),
+               "pnl": f"{(p.get('hypothetical_pnl') or 0):+.2f}"} for p in done]
+
+    def edge_row(name, key):
+        s = rd.get(key) or {}
+        pct = lambda v: f"{v*100:.0f}%" if v is not None else "–"
+        return {"name": name, "n": s.get("resolved", 0), "won": pct(s.get("win_rate")),
+                "need": pct(s.get("kalshi_implied_win_rate")), "pnl": f"{s.get('pnl', 0):+.2f}"}
+    edge_rows = [edge_row("Main", "strong"), edge_row("Pinnacle edge", "pinnacle_edge"), edge_row("Weak picks", "thin")]
+
+    so = rd.get("sharp_odds") or {}
+    pin = ("off" if not so.get("enabled") else
+           f"on, {so.get('remaining_credits', '?')} free requests left" + (f" (error: {so['last_error']})" if so.get("last_error") else ""))
+
+    alerts = []
+    if h.get("halted"):
+        alerts.append(f"Engine halted: {h.get('halted_reason') or 'see full details'}.")
+    if h.get("stale"):
+        alerts.append("Engine hasn't finished a scan in a while. Check Railway.")
+    if so.get("enabled") and isinstance(so.get("remaining_credits"), int) and so["remaining_credits"] < 60:
+        alerts.append(f"Pinnacle free requests almost used up ({so['remaining_credits']} left).")
+
+    return render_template_string(HOME_TEMPLATE, h=h, h_ago=h_ago, real_on=real_on, balances=balances,
+                                  open_picks=open_picks, recent=recent, edge_rows=edge_rows, pin=pin, alerts=alerts)
 
 
 @app.route("/sharp_odds_status")
